@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="Encoding">
+    <file url="file://$PROJECT_DIR$/SleePyCo/split_idx/idx_Sleep-EDF-2013.npy" charset="GBK" />
+    <file url="file://$PROJECT_DIR$/SleePyCo/split_idx/idx_Sleep-EDF-2018.npy" charset="UTF-16" />
+    <file url="file://$PROJECT_DIR$/zEEG-test/zz_ks1092/eeg_data_processed.npz" charset="UTF-16" />
+  </component>
+</project>
