@@ -2,11 +2,11 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="$PROJECT_DIR$" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/DeepSleepNet" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/SleePyCo" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/dreem-learning-open" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/eval_ssl_ssc" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/sleep-ML" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/tinysleepnet" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/DeepSleepNet" vcs="" />
+    <mapping directory="$PROJECT_DIR$/SleePyCo" vcs="" />
+    <mapping directory="$PROJECT_DIR$/dreem-learning-open" vcs="" />
+    <mapping directory="$PROJECT_DIR$/eval_ssl_ssc" vcs="" />
+    <mapping directory="$PROJECT_DIR$/sleep-ML" vcs="" />
+    <mapping directory="$PROJECT_DIR$/tinysleepnet" vcs="" />
   </component>
 </project>
