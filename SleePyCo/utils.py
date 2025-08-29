@@ -169,36 +169,58 @@ class EarlyStopping:
         torch.save(model.state_dict(), os.path.join(self.ckpt_path, self.ckpt_name))
         self.init_metric = val_metric
 
-
 def summarize_result(config, fold, y_true, y_pred, save=True):
     os.makedirs('results', exist_ok=True)
-    y_pred_argmax = np.argmax(y_pred, 1)
-    result_dict = skmet.classification_report(y_true, y_pred_argmax, digits=3, output_dict=True)
-    cm = skmet.confusion_matrix(y_true, y_pred_argmax)
+    y_pred_argmax = np.argmax(y_pred, 1)  # 取每行的最大值的索引作为预测类别
     
-    accuracy = round(result_dict['accuracy']*100, 1)
-    macro_f1 = round(result_dict['macro avg']['f1-score']*100, 1)
-    kappa = round(skmet.cohen_kappa_score(y_true, y_pred_argmax), 3)
+    # 使用 sklearn 的 classification_report 并指定 labels 和 zero_division 参数
+    from sklearn.metrics import classification_report, cohen_kappa_score, confusion_matrix
     
-    wpr = round(result_dict['0.0']['precision']*100, 1)
-    wre = round(result_dict['0.0']['recall']*100, 1)
-    wf1 = round(result_dict['0.0']['f1-score']*100, 1)
+    # 确保指定了所有可能的标签
+    num_classes = config['classifier']['num_classes']
+    labels = list(range(num_classes))
     
-    n1pr = round(result_dict['1.0']['precision']*100, 1)
-    n1re = round(result_dict['1.0']['recall']*100, 1)
-    n1f1 = round(result_dict['1.0']['f1-score']*100, 1)
-
-    n2pr = round(result_dict['2.0']['precision']*100, 1)
-    n2re = round(result_dict['2.0']['recall']*100, 1)
-    n2f1 = round(result_dict['2.0']['f1-score']*100, 1)
+    # 生成分类报告，处理零除情况
+    result_dict = classification_report(y_true, y_pred_argmax, labels=labels, zero_division=0, output_dict=True)
+    cm = confusion_matrix(y_true, y_pred_argmax, labels=labels)
     
-    n3pr = round(result_dict['3.0']['precision']*100, 1)
-    n3re = round(result_dict['3.0']['recall']*100, 1)
-    n3f1 = round(result_dict['3.0']['f1-score']*100, 1)
+    # 获取整体指标
+    accuracy = round(result_dict['accuracy']*100, 1) if 'accuracy' in result_dict else 0.0
+    macro_f1 = round(result_dict['macro avg']['f1-score']*100, 1) if 'macro avg' in result_dict and 'f1-score' in result_dict['macro avg'] else 0.0
+    kappa = round(cohen_kappa_score(y_true, y_pred_argmax), 3)
     
-    rpr = round(result_dict['4.0']['precision']*100, 1)
-    rre = round(result_dict['4.0']['recall']*100, 1)
-    rf1 = round(result_dict['4.0']['f1-score']*100, 1)
+    # 初始化各类别指标
+    class_metrics = {}
+    for i in range(num_classes):
+        class_key = str(i)  # classification_report 使用字符串作为键
+        if class_key in result_dict:
+            class_metrics[i] = {
+                'precision': round(result_dict[class_key]['precision'] * 100, 1),
+                'recall': round(result_dict[class_key]['recall'] * 100, 1),
+                'f1': round(result_dict[class_key]['f1-score'] * 100, 1)
+            }
+        else:
+            class_metrics[i] = {
+                'precision': 0.0,
+                'recall': 0.0,
+                'f1': 0.0
+            }
+    
+    # 提取各类别指标
+    wpr, wre, wf1 = class_metrics[0]['precision'], class_metrics[0]['recall'], class_metrics[0]['f1']
+    n1pr, n1re, n1f1 = class_metrics[1]['precision'], class_metrics[1]['recall'], class_metrics[1]['f1']
+    n2pr, n2re, n2f1 = class_metrics[2]['precision'], class_metrics[2]['recall'], class_metrics[2]['f1']
+    n3pr, n3re, n3f1 = class_metrics[3]['precision'], class_metrics[3]['recall'], class_metrics[3]['f1']
+    rpr, rre, rf1 = class_metrics[4]['precision'], class_metrics[4]['recall'], class_metrics[4]['f1']
+    
+    # 确保混淆矩阵大小正确
+    # 填充或裁剪混淆矩阵为5x5
+    cm_formatted = np.zeros((5, 5))
+    cm_rows, cm_cols = cm.shape if len(cm.shape) == 2 else (0, 0)
+    if cm_rows > 0 and cm_cols > 0:
+        min_rows = min(cm_rows, 5)
+        min_cols = min(cm_cols, 5)
+        cm_formatted[:min_rows, :min_cols] = cm[:min_rows, :min_cols]
     
     overall_data = [
         ['ACC', 'MF1', '\u03BA'],
@@ -207,11 +229,11 @@ def summarize_result(config, fold, y_true, y_pred, save=True):
     
     perclass_data = [
         [colored('A', 'cyan') + '\\' + colored('P', 'green'), 'W', 'N1', 'N2', 'N3', 'R', 'PR', 'RE', 'F1'],
-        ['W', cm[0][0], cm[0][1], cm[0][2], cm[0][3], cm[0][4], wpr, wre, wf1],
-        ['N1', cm[1][0], cm[1][1], cm[1][2], cm[1][3], cm[1][4], n1pr, n1re, n1f1],
-        ['N2', cm[2][0], cm[2][1], cm[2][2], cm[2][3], cm[2][4], n2pr, n2re, n2f1],
-        ['N3', cm[3][0], cm[3][1], cm[3][2], cm[3][3], cm[3][4], n3pr, n3re, n3f1],
-        ['R', cm[4][0], cm[4][1], cm[4][2], cm[4][3], cm[4][4], rpr, rre, rf1],
+        ['W', cm_formatted[0][0], cm_formatted[0][1], cm_formatted[0][2], cm_formatted[0][3], cm_formatted[0][4], wpr, wre, wf1],
+        ['N1', cm_formatted[1][0], cm_formatted[1][1], cm_formatted[1][2], cm_formatted[1][3], cm_formatted[1][4], n1pr, n1re, n1f1],
+        ['N2', cm_formatted[2][0], cm_formatted[2][1], cm_formatted[2][2], cm_formatted[2][3], cm_formatted[2][4], n2pr, n2re, n2f1],
+        ['N3', cm_formatted[3][0], cm_formatted[3][1], cm_formatted[3][2], cm_formatted[3][3], cm_formatted[3][4], n3pr, n3re, n3f1],
+        ['R', cm_formatted[4][0], cm_formatted[4][1], cm_formatted[4][2], cm_formatted[4][3], cm_formatted[4][4], rpr, rre, rf1],
     ]
     
     overall_dt = SingleTable(overall_data, colored('OVERALL RESULT', 'red'))
@@ -223,18 +245,85 @@ def summarize_result(config, fold, y_true, y_pred, save=True):
     print(colored(' A', 'cyan') + ': Actual Class, ' + colored('P', 'green') + ': Predicted Class' + '\n\n')
     
     if save:
-        with open(os.path.join('results', config['name'] + '.txt'), 'w') as f:
+        with open(os.path.join('results', config['name'] + '.txt'), 'a') as f:
             f.write(
                 str(fold) + ' ' +
-                str(round(result_dict['accuracy']*100, 1)) + ' ' + 
-                str(round(result_dict['macro avg']['f1-score']*100, 1)) + ' ' + 
-                str(round(kappa, 3)) + ' ' +
-                str(round(result_dict['0.0']['f1-score']*100, 1)) + ' ' +
-                str(round(result_dict['1.0']['f1-score']*100, 1)) + ' ' +
-                str(round(result_dict['2.0']['f1-score']*100, 1)) + ' ' +
-                str(round(result_dict['3.0']['f1-score']*100, 1)) + ' ' +
-                str(round(result_dict['4.0']['f1-score']*100, 1)) + ' '
+                str(accuracy) + ' ' + 
+                str(macro_f1) + ' ' + 
+                str(kappa) + ' ' +
+                str(wf1) + ' ' +
+                str(n1f1) + ' ' +
+                str(n2f1) + ' ' +
+                str(n3f1) + ' ' +
+                str(rf1) + '\n'  # 添加换行符
             )
+
+
+# def summarize_result(config, fold, y_true, y_pred, save=True):
+#     os.makedirs('results', exist_ok=True)
+#     y_pred_argmax = np.argmax(y_pred, 1) # 取每行的最大值的索引作为预测类别
+#     result_dict = skmet.classification_report(y_true, y_pred_argmax, digits=3, output_dict=True)
+#     cm = skmet.confusion_matrix(y_true, y_pred_argmax)
+    
+#     accuracy = round(result_dict['accuracy']*100, 1)
+#     macro_f1 = round(result_dict['macro avg']['f1-score']*100, 1)
+#     kappa = round(skmet.cohen_kappa_score(y_true, y_pred_argmax), 3)
+    
+#     wpr = round(result_dict['0.0']['precision']*100, 1)
+#     wre = round(result_dict['0.0']['recall']*100, 1)
+#     wf1 = round(result_dict['0.0']['f1-score']*100, 1)
+    
+#     n1pr = round(result_dict['1.0']['precision']*100, 1)
+#     n1re = round(result_dict['1.0']['recall']*100, 1)
+#     n1f1 = round(result_dict['1.0']['f1-score']*100, 1)
+
+#     n2pr = round(result_dict['2.0']['precision']*100, 1)
+#     n2re = round(result_dict['2.0']['recall']*100, 1)
+#     n2f1 = round(result_dict['2.0']['f1-score']*100, 1)
+    
+#     n3pr = round(result_dict['3.0']['precision']*100, 1)
+#     n3re = round(result_dict['3.0']['recall']*100, 1)
+#     n3f1 = round(result_dict['3.0']['f1-score']*100, 1)
+    
+#     rpr = round(result_dict['4.0']['precision']*100, 1)
+#     rre = round(result_dict['4.0']['recall']*100, 1)
+#     rf1 = round(result_dict['4.0']['f1-score']*100, 1)
+    
+#     overall_data = [
+#         ['ACC', 'MF1', '\u03BA'],
+#         [accuracy, macro_f1, kappa],
+#     ]
+    
+#     perclass_data = [
+#         [colored('A', 'cyan') + '\\' + colored('P', 'green'), 'W', 'N1', 'N2', 'N3', 'R', 'PR', 'RE', 'F1'],
+#         ['W', cm[0][0], cm[0][1], cm[0][2], cm[0][3], cm[0][4], wpr, wre, wf1],
+#         ['N1', cm[1][0], cm[1][1], cm[1][2], cm[1][3], cm[1][4], n1pr, n1re, n1f1],
+#         ['N2', cm[2][0], cm[2][1], cm[2][2], cm[2][3], cm[2][4], n2pr, n2re, n2f1],
+#         ['N3', cm[3][0], cm[3][1], cm[3][2], cm[3][3], cm[3][4], n3pr, n3re, n3f1],
+#         ['R', cm[4][0], cm[4][1], cm[4][2], cm[4][3], cm[4][4], rpr, rre, rf1],
+#     ]
+    
+#     overall_dt = SingleTable(overall_data, colored('OVERALL RESULT', 'red'))
+#     perclass_dt = SingleTable(perclass_data, colored('PER-CLASS RESULT', 'red'))
+    
+#     print('\n[INFO] Evaluation result from fold 1 to {}'.format(fold))
+#     print('\n' + overall_dt.table)
+#     print('\n' + perclass_dt.table)
+#     print(colored(' A', 'cyan') + ': Actual Class, ' + colored('P', 'green') + ': Predicted Class' + '\n\n')
+    
+#     if save:
+#         with open(os.path.join('results', config['name'] + '.txt'), 'w') as f:
+#             f.write(
+#                 str(fold) + ' ' +
+#                 str(round(result_dict['accuracy']*100, 1)) + ' ' + 
+#                 str(round(result_dict['macro avg']['f1-score']*100, 1)) + ' ' + 
+#                 str(round(kappa, 3)) + ' ' +
+#                 str(round(result_dict['0.0']['f1-score']*100, 1)) + ' ' +
+#                 str(round(result_dict['1.0']['f1-score']*100, 1)) + ' ' +
+#                 str(round(result_dict['2.0']['f1-score']*100, 1)) + ' ' +
+#                 str(round(result_dict['3.0']['f1-score']*100, 1)) + ' ' +
+#                 str(round(result_dict['4.0']['f1-score']*100, 1)) + ' '
+#             )
 
 
 def set_random_seed(seed_value, use_cuda=True):
