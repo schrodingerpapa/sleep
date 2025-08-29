@@ -244,8 +244,23 @@ def summarize_result(config, fold, y_true, y_pred, save=True):
     print('\n' + perclass_dt.table)
     print(colored(' A', 'cyan') + ': Actual Class, ' + colored('P', 'green') + ': Predicted Class' + '\n\n')
     
-    if save:
-        with open(os.path.join('results', config['name'] + '.txt'), 'a') as f:
+    if save:    # 'a'追加模式写入文件,'w'模式会覆盖之前的内容，'r'模式只读
+        file_path = os.path.join('results', config['name'] + '.txt')
+        write_header = False
+        if not os.path.exists(file_path):
+            write_header = True
+        else:
+            with open(file_path, 'r') as f:
+                first_line = f.readline().strip()
+                if first_line != "fold accuracy macro_f1 kappa wf1 n1f1 n2f1 n3f1 rf1":
+                    write_header = True
+        
+        if write_header:
+            with open(file_path, 'w') as f:
+                f.write("fold accuracy macro_f1 kappa wf1 n1f1 n2f1 n3f1 rf1\n")
+
+
+        with open(os.path.join('results', config['name'] + '.txt'), 'a') as f: 
             f.write(
                 str(fold) + ' ' +
                 str(accuracy) + ' ' + 
@@ -255,7 +270,7 @@ def summarize_result(config, fold, y_true, y_pred, save=True):
                 str(n1f1) + ' ' +
                 str(n2f1) + ' ' +
                 str(n3f1) + ' ' +
-                str(rf1) + '\n'  # 添加换行符
+                str(rf1) + '\n'  
             )
 
 
