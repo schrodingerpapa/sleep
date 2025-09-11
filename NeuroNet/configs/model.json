@@ -1,0 +1,45 @@
+{
+    "Dataset": {
+        "name": "Sleep-EDF-2018",
+        "eeg_channel": "Fpz-Cz",
+        "k_splits": 5,
+        "n_fold": 0,
+        "sfreq": 100,
+        "rfreq": 100,
+        "data_scaler": false,
+
+        "second": 30,
+        "time_window": 3,
+        "time_step": 0.375,
+
+        "base_path": "./data/Sleep-EDF-2018",
+        "ckpt_path": ".C:/算法复现/Sleep/NeuroNet/checkpoints/"
+    },
+
+    "Encoder": {
+        "name": "NeuroNet-B",
+        "encoder_embed_dim": 768,
+        "encoder_heads": 8,
+        "encoder_depths": 4,
+        "alpha": 1,
+        "projection_hidden": [1024, 512]
+    },
+
+    "Decoder": {
+        "decoder_embed_dim": 256,
+        "decoder_heads": 8,
+        "decoder_depths": 3
+    },
+
+    "training_params": {
+        "name": "pretrain",
+        "train_epochs": 30,
+        "train_warmup_epoch": 100,
+        "train_batch_accumulation": 1,
+        "batch_size": 256,
+        "train_base_learning_rate": 1e-5,
+        "temperature": 0.05,
+        "mask_ratio": 0.8,
+        "print_point": 20
+    }
+}
