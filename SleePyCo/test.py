@@ -62,8 +62,9 @@ def main():
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--seed', type=int, default=42, help='random seed')
-    parser.add_argument('--gpu', type=str, default="0", help='gpu id')
+    parser.add_argument('--gpu', type=str, default="0,1,2,3,4,5,6,7", help='gpu id')
     parser.add_argument('--config', type=str, help='config file path')
+    parser.add_argument('--fold', type=int, help='fold to evaluate')
     args = parser.parse_args()
 
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"   
@@ -73,24 +74,23 @@ def main():
         config = json.load(config_file)
     config['name'] = os.path.basename(args.config).replace('.json', '')
     
-    Y_true = np.zeros(0)
-    Y_pred = np.zeros((0, config['classifier']['num_classes']))
-
-    for fold in range(1, config['dataset']['num_splits'] + 1):
-        evaluator = OneFoldEvaluator(args, fold, config)
+    if args.fold is not None:
+        evaluator = OneFoldEvaluator(args, args.fold, config)
         y_true, y_pred = evaluator.run()
-        Y_true = np.concatenate([Y_true, y_true])
-        Y_pred = np.concatenate([Y_pred, y_pred])
+        
     
-        summarize_result(config, fold, Y_true, Y_pred)
+        summarize_result(config, args.fold, y_true, y_pred)
+    else:
+        Y_true = np.zeros(0)
+        Y_pred = np.zeros((0, config['classifier']['num_classes']))
+        for fold in range(1, config['dataset']['num_splits'] + 1):
+            evaluator = OneFoldEvaluator(args, fold, config)
+            y_true, y_pred = evaluator.run()
+            Y_true = np.concatenate([Y_true, y_true])
+            Y_pred = np.concatenate([Y_pred, y_pred])
+        
+            summarize_result(config, fold, Y_true, Y_pred)
     
 
 if __name__ == "__main__":
     main()
-    import torch
-
-    print(torch.cuda.is_available())  # True
-    print(torch.cuda.device_count())  # 1 或 2
-    print(torch.cuda.get_device_name(0))  # "NVIDIA GeForce RTX 4060..."
-    print(torch.cuda.memory_allocated() / 1024 ** 2, "MB")  # 实时显存占用
-

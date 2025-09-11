@@ -12,6 +12,8 @@ from utils import *
 from loader import EEGDataLoader
 from models.main_model import MainModel
 
+import time
+import numpy as np
 
 class OneFoldTrainer:
     def __init__(self, args, fold, config):
@@ -39,6 +41,11 @@ class OneFoldTrainer:
         self.ckpt_name = 'ckpt_fold-{0:02d}.pth'.format(self.fold)
         self.early_stopping = EarlyStopping(patience=self.es_cfg['patience'], verbose=True, ckpt_path=self.ckpt_path, ckpt_name=self.ckpt_name, mode=self.es_cfg['mode'])
         
+        self.train_losses = []
+        self.val_losses = []    # 记录每个epoch的训练和验证损失
+
+        self.fold_start_time = None
+        self.fold_end_time = None     # 添加训练时间记录
 
     def build_model(self):
         model = MainModel(self.cfg)
@@ -120,10 +127,15 @@ class OneFoldTrainer:
             if self.train_iter % self.tp_cfg['val_period'] == 0:
                 print('')
                 val_acc, val_loss = self.evaluate(mode='val')
+                self.val_losses.append(val_loss)
                 self.early_stopping(val_acc, val_loss, self.model)
                 self.activate_train_mode()
                 if self.early_stopping.early_stop:
                     break
+        # 保存训练损失（每个epoch）
+        if len(self.loader_dict['train']) > 0:
+            avg_train_loss = train_loss / len(self.loader_dict['train'])
+            self.train_losses.append(avg_train_loss)
             
     @torch.no_grad()
     def evaluate(self, mode):
@@ -155,6 +167,8 @@ class OneFoldTrainer:
             progress_bar(i, len(self.loader_dict[mode]), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
                     % (eval_loss / (i + 1), 100. * correct / total, correct, total))
 
+        avg_eval_loss = eval_loss / len(self.loader_dict[mode]) if len(self.loader_dict[mode]) > 0 else 0
+
         if mode == 'val':
             return 100. * correct / total, eval_loss
         elif mode == 'test':
@@ -163,17 +177,60 @@ class OneFoldTrainer:
             raise NotImplementedError
     
     def run(self):
+        self.fold_start_time = time.time()  # 记录开始时间
         for epoch in range(self.tp_cfg['max_epochs']):
             print('\n[INFO] Fold: {}, Epoch: {}'.format(self.fold, epoch))
             self.train_one_epoch(epoch)
             if self.early_stopping.early_stop:
                 break
+        self.fold_end_time = time.time()  # 记录结束时间
+        training_time = self.fold_end_time - self.fold_start_time     
         
+        loss_data = {
+            'train_losses': self.train_losses,
+            'val_losses': self.val_losses,
+            'training_time': training_time
+        }
+        os.makedirs(self.ckpt_path, exist_ok=True)
+        np.save(os.path.join(self.ckpt_path, f'losses_fold-{self.fold:02d}.npy'), loss_data)
+
         self.model.load_state_dict(torch.load(os.path.join(self.ckpt_path, self.ckpt_name)))
         y_true, y_pred = self.evaluate(mode='test')
         print('')
 
         return y_true, y_pred
+
+def determine_start_fold_by_loss(config):
+    """
+    通过检查loss文件来确定哪些fold需要训练
+    返回需要训练的fold列表而不是起始fold
+    """
+    ckpt_path = os.path.join('checkpoints', config['name'])
+    
+    # 如果检查点目录不存在，训练所有folds
+    if not os.path.exists(ckpt_path):
+        print('[INFO] Checkpoint directory does not exist, training all folds')
+        return list(range(1, config['dataset']['num_splits'] + 1))
+    
+    folds_to_train = []
+    num_folds = config['dataset']['num_splits']
+    
+    # 检查每个fold的loss文件是否存在
+    for fold in range(1, num_folds + 1):
+        loss_file = os.path.join(ckpt_path, f'losses_fold-{fold:02d}.npy')
+        
+        # 如果loss文件不存在，需要训练这个fold
+        if not os.path.exists(loss_file):
+            folds_to_train.append(fold)
+            print(f'[INFO] Loss file for fold {fold} not found, will train this fold')
+        else:
+            print(f'[INFO] Loss file for fold {fold} found, skipping this fold')
+    
+    # 如果所有fold都已完成，返回空列表
+    if not folds_to_train:
+        print('[INFO] All folds have been trained, no training needed')
+    
+    return folds_to_train
 
 def main():
     warnings.filterwarnings("ignore", category=DeprecationWarning) 
@@ -181,7 +238,7 @@ def main():
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--seed', type=int, default=42, help='random seed')
-    parser.add_argument('--gpu', type=str, default="0", help='gpu id')
+    parser.add_argument('--gpu', type=str, default="0,1,2,3,4,5,6,7", help='gpu id')
     parser.add_argument('--config', type=str, help='config file path')
     args = parser.parse_args()
 
@@ -198,7 +255,8 @@ def main():
     Y_true = np.zeros(0)
     Y_pred = np.zeros((0, config['classifier']['num_classes']))
 
-    for fold in range(1, config['dataset']['num_splits'] + 1):
+    folds_to_train = determine_start_fold_by_loss(config)
+    for fold in folds_to_train:
         trainer = OneFoldTrainer(args, fold, config)
         y_true, y_pred = trainer.run()
         Y_true = np.concatenate([Y_true, y_true])

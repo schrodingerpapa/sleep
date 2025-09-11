@@ -2,6 +2,7 @@ import os
 import json
 import argparse
 import warnings
+import time
 
 import torch
 import torch.optim as optim
@@ -14,6 +15,7 @@ from models.main_model import MainModel
 
 # 在文件开头导入 TensorBoard
 from torch.utils.tensorboard import SummaryWriter
+from torch.amp import GradScaler, autocast
 #train_no_label.py 用于自监督对比学习模型
 
 class OneFoldTrainer:
@@ -42,9 +44,13 @@ class OneFoldTrainer:
         self.train_losses = []
         self.val_losses = []    # 记录每个epoch的训练和验证损失
 
+        # 添加训练时间记录
+        self.fold_start_time = None
+        self.fold_end_time = None
+
         # 添加 TensorBoard writer 初始化
         self.writer = SummaryWriter(log_dir=os.path.join('runs', config['name'], f'fold_{fold}'))
-
+        self.scaler = GradScaler('cuda')
 
     def build_model(self):
         model = MainModel(self.cfg)
@@ -56,12 +62,17 @@ class OneFoldTrainer:
         return model
     
     def build_dataloader(self):
-        #根据GPU数量设置dataloader参数
+        #根据GPU数量设置dataloader参数， worker 数不超过 CPU 逻辑核心的 80%
         num_gpus = len(self.args.gpu.split(","))
-        dataloader_args = {'batch_size': self.tp_cfg['batch_size'],
-                            'shuffle': True, 
-                            'num_workers': 4*num_gpus, 
-                            'pin_memory': True}
+        dataloader_args = {
+        'batch_size': self.tp_cfg['batch_size']*2,
+        'shuffle': True, 
+        'num_workers': num_gpus,  # 增加worker数量
+        'pin_memory': True,
+        'persistent_workers': True,  # 保持worker进程存活
+        'prefetch_factor': 4,  # 每个worker预取4个batch
+        'pin_memory_device': f'cuda:{self.args.gpu.split(",")[0]}'  # 指定pin memory设备
+        }
         train_dataset = EEGDataLoader(self.cfg, self.fold, set='train')
         train_loader = DataLoader(dataset=train_dataset, **dataloader_args)
         val_dataset = EEGDataLoader(self.cfg, self.fold, set='val')
@@ -76,29 +87,37 @@ class OneFoldTrainer:
         num_batches = 0
 
         for i, (inputs, labels) in enumerate(self.loader_dict['train']):
-            loss = 0
             # 不需要标签进行训练
             # labels = labels.view(-1).to(self.device)
+            # torch.cat([inputs[0], inputs[1]], dim=0)将增强数据按行拼接
+            inputs = torch.cat([inputs[0], inputs[1]], dim=0).to(self.device, non_blocking=True)
+            
+            # 使用混合精度训练
+            with autocast(device_type='cuda'):
+                outputs = self.model(inputs)[0]
 
-            inputs = torch.cat([inputs[0], inputs[1]], dim=0).to(self.device)
-            outputs = self.model(inputs)[0]
-
-            f1, f2 = torch.split(outputs, [labels.size(0), labels.size(0)], dim=0)
-            features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)
-            #无标签，损失函数只需要计算特征之间的对比损失
-            loss += self.criterion(features)
+                f1, f2 = torch.split(outputs, [labels.size(0), labels.size(0)], dim=0)
+                features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)
+                #无标签，损失函数只需要计算特征之间的对比损失
+                loss = self.criterion(features)
             
             self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
+            # 使用scaler缩放损失并反向传播
+            self.scaler.scale(loss).backward()
+            # 使用scaler更新优化器
+            self.scaler.step(self.optimizer)
+            # 更新scaler
+            self.scaler.update()
 
             train_loss += loss.item()
             num_batches += 1
 
             self.train_iter += 1
 
-            progress_bar(i, len(self.loader_dict['train']), 'Lr: %.4e | Loss: %.3f' %(get_lr(self.optimizer), train_loss / (i + 1)))
+            if i % 10 == 0:  # 每10个batch更新一次
+                progress_bar(i, len(self.loader_dict['train']), 'Lr: %.4e | Loss: %.3f' %(get_lr(self.optimizer), train_loss / (i + 1)))
 
+            
             if self.train_iter % self.tp_cfg['val_period'] == 0:
                 print('')
                 val_loss = self.evaluate(mode='val')
@@ -115,7 +134,6 @@ class OneFoldTrainer:
                 train_loss = 0
                 num_batches = 0
 
-
                 self.model.train()
                 if self.early_stopping.early_stop:
                     break
@@ -126,40 +144,90 @@ class OneFoldTrainer:
         eval_loss = 0
         num_batches = 0
 
-        for i, (inputs, labels) in enumerate(self.loader_dict[mode]):
-            loss = 0
-            inputs = inputs.to(self.device)
-            # 不需要标签进行验证
-            #labels = labels.view(-1).to(self.device)
-            
-            outputs = self.model(inputs)[0]
+        # 评估使用混合精度
+        with autocast(device_type='cuda'):
+            for i, (inputs, labels) in enumerate(self.loader_dict[mode]):
+                loss = 0
+                inputs = inputs.to(self.device, non_blocking=True)
+                # 不需要标签进行验证
+                #labels = labels.view(-1).to(self.device)
+                
+                outputs = self.model(inputs)[0]
 
-            features = outputs.unsqueeze(1).repeat(1, 2, 1)
-            #无标签，损失函数只需要计算特征之间的对比损失
-            loss += self.criterion(features)
+                features = outputs.unsqueeze(1).repeat(1, 2, 1)
+                #无标签，损失函数只需要计算特征之间的对比损失
+                loss = self.criterion(features)
 
-            eval_loss += loss.item() 
-            num_batches += 1
-            
-            progress_bar(i, len(self.loader_dict[mode]), 'Lr: %.4e | Loss: %.3f' %(get_lr(self.optimizer), eval_loss / (i + 1)))
+                eval_loss += loss.item() 
+                num_batches += 1
+    
+                if i % 10 == 0: #每10个batch更新一次
+                    progress_bar(i, len(self.loader_dict[mode]), 'Lr: %.4e | Loss: %.3f' %(get_lr(self.optimizer), eval_loss / (i + 1)))
 
         return eval_loss
     
     def run(self):
+        self.fold_start_time = time.time()
         for epoch in range(self.tp_cfg['max_epochs']):
             print('\n[INFO] Fold: {}, Epoch: {}'.format(self.fold, epoch))
             self.train_one_epoch()
             if self.early_stopping.early_stop:
                 break
+        
+        # 记录训练结束时间
+        self.fold_end_time = time.time()
+        fold_duration = self.fold_end_time - self.fold_start_time
+        # 计算训练时长
+        hours, remainder = divmod(fold_duration, 3600)
+        minutes, seconds = divmod(remainder, 60)
+            
+        print(f'[INFO] Fold {self.fold} training completed at {time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.fold_end_time))}')
+        print(f'[INFO] Fold {self.fold} training duration: {int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}')
+            
+
         self.writer.close()  # 关闭 TensorBoard writer
         
         loss_data = {
             'train_losses': self.train_losses,
-            'val_losses': self.val_losses
+            'val_losses': self.val_losses,
+            'training_time': fold_duration,  
+            'training_time_formatted': f'{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}'
         }
         os.makedirs(self.ckpt_path, exist_ok=True)
         np.save(os.path.join(self.ckpt_path, f'losses_fold-{self.fold:02d}.npy'), loss_data)
-
+    
+    
+def determine_start_fold_by_loss(config):
+    """
+    通过检查loss文件来确定哪些fold需要训练
+    返回需要训练的fold列表而不是起始fold
+    """
+    ckpt_path = os.path.join('checkpoints', config['name'])
+    
+    # 如果检查点目录不存在，训练所有folds
+    if not os.path.exists(ckpt_path):
+        print('[INFO] Checkpoint directory does not exist, training all folds')
+        return list(range(1, config['dataset']['num_splits'] + 1))
+    
+    folds_to_train = []
+    num_folds = config['dataset']['num_splits']
+    
+    # 检查每个fold的loss文件是否存在
+    for fold in range(1, num_folds + 1):
+        loss_file = os.path.join(ckpt_path, f'losses_fold-{fold:02d}.npy')
+        
+        # 如果loss文件不存在，需要训练这个fold
+        if not os.path.exists(loss_file):
+            folds_to_train.append(fold)
+            print(f'[INFO] Loss file for fold {fold} not found, will train this fold')
+        else:
+            print(f'[INFO] Loss file for fold {fold} found, skipping this fold')
+    
+    # 如果所有fold都已完成，返回空列表
+    if not folds_to_train:
+        print('[INFO] All folds have been trained, no training needed')
+    
+    return folds_to_train
 
 
 def main():
@@ -182,8 +250,14 @@ def main():
     with open(args.config) as config_file:
         config = json.load(config_file)
     config['name'] = os.path.basename(args.config).replace('.json', '')
+
+    # 确定需要训练的folds
+    folds_to_train = determine_start_fold_by_loss(config)
+    print(f'[INFO] Folds to train: {folds_to_train}')
     
-    for fold in range(1, config['dataset']['num_splits'] + 1):
+    # 只训练缺失的folds
+    for fold in folds_to_train:
+        print(f'[INFO] Starting training for fold {fold}')
         trainer = OneFoldTrainer(args, fold, config)
         trainer.run()
 

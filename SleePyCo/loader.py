@@ -13,12 +13,12 @@ class EEGDataLoader(Dataset):
         self.set = set
         self.fold = fold
 
-        self.sr = 100        
+        self.sr = 100 # 采样率     
         self.dset_cfg = config['dataset']
         
         self.root_dir = self.dset_cfg['root_dir']  # 根目录
         self.dset_name = self.dset_cfg['name']  # 数据集名称
-        self.num_splits = self.dset_cfg['num_splits']  # 划分份数
+        self.num_splits = self.dset_cfg['num_splits']  # 划分fold
         self.eeg_channel = self.dset_cfg['eeg_channel']  # eeg选用通道
         
         self.seq_len = self.dset_cfg['seq_len']  # 序列长度
@@ -26,7 +26,8 @@ class EEGDataLoader(Dataset):
         
         self.training_mode = config['training_params']['mode'] # 训练模式
 
-        self.dataset_path = os.path.join(self.root_dir, 'dset', self.dset_name, 'npz')  # 数据集路径
+        # 数据集路径更改
+        self.dataset_path = os.path.join(self.root_dir, self.dset_name, 'npz')  # 数据集路径
         self.inputs, self.labels, self.epochs = self.split_dataset()  # 划分数据集
         
         if self.training_mode == 'pretrain':
@@ -53,7 +54,7 @@ class EEGDataLoader(Dataset):
         if self.set == 'train':
             if self.training_mode == 'pretrain': # 预训练模式
                 assert seq_len == 1
-                input_a, input_b = self.two_transform(inputs)
+                input_a, input_b = self.two_transform(inputs) #增强视图
                 input_a = torch.from_numpy(input_a).float()
                 input_b = torch.from_numpy(input_b).float()
                 inputs = [input_a, input_b]
@@ -86,7 +87,7 @@ class EEGDataLoader(Dataset):
     
         if self.dset_name == 'Sleep-EDF-2013':
             for i in range(len(data_fname_list)):
-                subject_idx = int(data_fname_list[i][3:5])
+                subject_idx = int(data_fname_list[i][3:5]) # 字符串切片，取文件名的第4个到第5个字符（Python切片是左闭右开区间）
                 if subject_idx == self.fold - 1:
                     data_fname_dict['test'].append(data_fname_list[i])
                 elif subject_idx in split_idx_list[self.fold - 1]:

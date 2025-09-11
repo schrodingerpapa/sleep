@@ -2,7 +2,7 @@ from sklearn.metrics import confusion_matrix, classification_report, ConfusionMa
 import pandas as pd
 import matplotlib.pyplot as plt
 
-data = pd.read_csv(r"C:\Users\clg\Desktop\降采样\SC_predictions.csv")
+data = pd.read_csv(r"/home/chenlungan/算法模型/SleePyCo/results/SC_predictions.csv")
 # 确保 label_data 和 final_prediction 长度一致
 
 y_true = data['real label'].values
@@ -14,6 +14,7 @@ disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['W', 'N1', 'N
 disp.plot(cmap=plt.cm.Blues)
 plt.title('Confusion Matrix')
 plt.show()
+plt.savefig(r"/home/chenlungan/算法模型/SleePyCo/results/SC_predictions_Confusion_Matrix.png", bbox_inches="tight")
 
 # 打印分类报告（precision, recall, f1-score, support）
 print("分类报告：")

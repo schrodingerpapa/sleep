@@ -13,6 +13,7 @@ from utils import *
 from loader import EEGDataLoader
 from models.main_model import MainModel
 
+import matplotlib.pyplot as plt
 
 class OneFoldTrainer:
     def __init__(self, args, fold, config):
@@ -79,7 +80,7 @@ class OneFoldTrainer:
 
     def run_csv(self, csv_path):
         import pandas as pd
-        data = pd.read_csv(csv_path, header=0).values[:, 1].squeeze()  # shape: (总点数,)
+        data = pd.read_csv(csv_path, header=0).values[:, 1].squeeze()*2  # shape: (总点数,)
 
         segment_length = 30000
         frame_length = 3000
@@ -103,7 +104,33 @@ class OneFoldTrainer:
                 predicted = torch.argmax(output, dim=1)  # shape: (10,)
                 predictions.extend(predicted.cpu().numpy())
 
+        df = pd.DataFrame({
+            'Frame': range(1, len(predictions) + 1),
+            'Predicted': predictions}) 
+        filename = 'predictions-ads'
+        save_path = r"/home/chenlungan/算法模型/SleePyCo/results/{filename}.csv".format(filename=filename)
+        df.to_csv(save_path, index=False)
         print('Predicted per frame:', predictions)
+
+        time_points = [i/120 for i in range(len(predictions))]  # 每30秒一个数据点
+        data = predictions
+        # 折线图
+        fig = plt.gcf()
+        fig.clf()
+        plt.figure(figsize=(10, 6))
+
+        plt.plot(time_points, data, '#00008B')
+        plt.title('Hypnogram Scored by SleePyCo', fontweight="medium")
+        plt.yticks([0, 1, 2, 3, 4], ['W', 'N1', 'N2', 'N3', 'REM'])
+        plt.xlabel('Time [h]')
+        plt.ylabel('Sleep Stage')
+
+        plt.tight_layout()
+
+        filename = 'SC_predictions'
+        save_fig_path = r"/home/chenlungan/算法模型/SleePyCo/results/{filename}.png".format(filename=filename)
+        plt.savefig(save_fig_path, bbox_inches="tight")
+        plt.show()
 
     def run_npz(self, npz_path):
         data = np.load(npz_path)
@@ -138,15 +165,37 @@ class OneFoldTrainer:
             print(len(predictions), len(label_data))
             raise ValueError("预测结果长度与标签长度不一致")
 
+        time_points = [i * 1 for i in range(len(predictions))]  # 每30秒一个数据点
+        data = predictions
         df = pd.DataFrame({
             'Frame': range(1, len(predictions) + 1),
             'Predicted': predictions,
             'label': label_data}  # 确保标签长度与预测长度一致}
         )
-        filename = 'predictions-SC4821G0'
-        save_path = r"C:\Users\clg\Desktop\降采样\{filename}.csv".format(filename=filename)
-        df.to_csv(save_path, index=False)
+        fig = plt.gcf()
+        fig.clf()
+        plt.figure(figsize=(10, 6))
 
+        ax_1 = plt.subplot(2, 1, 1)
+        ax_1.plot(time_points, label_data[:len(data)], '#008000')
+
+        plt.title('Hypnogram Scored by Human Expert', fontweight="medium")
+        plt.yticks([0, 1, 2, 3, 4], ['W', 'N1', 'N2', 'N3', 'REM'])
+        plt.xlabel('Time [h]')
+        plt.ylabel('Sleep Stage')
+
+        ax_2 = plt.subplot(2, 1, 2)
+        ax_2.plot(time_points, data, '#00008B')
+        plt.title('Hypnogram Scored by SleePyCo', fontweight="medium")
+        plt.yticks([0, 1, 2, 3, 4], ['W', 'N1', 'N2', 'N3', 'REM'])
+        plt.xlabel('Time [h]')
+        plt.ylabel('Sleep Stage')
+
+        plt.tight_layout()
+
+        filename = 'SC_predictions_npz'
+        save_fig_path = r"/home/chenlungan/算法模型/SleePyCo/results/{filename}.png".format(filename=filename)
+        plt.savefig(save_fig_path, bbox_inches="tight")
         print('Predicted per frame:', predictions)
 
     def run_ensemble(self, npz_path):
@@ -176,7 +225,7 @@ class OneFoldTrainer:
 
         all_predictions = []  # 存储 20 个模型的预测结果
 
-        for fold in range(1, 21):  # 遍历所有 fold
+        for fold in range(1, 11):  # 遍历所有 fold
             print(f"[INFO] 正在加载 Fold {fold} 的模型...")
             self.model = self.build_model()
             load_path = os.path.join('checkpoints', self.cfg['name'], f'ckpt_fold-{fold:02d}.pth')
@@ -219,9 +268,9 @@ class OneFoldTrainer:
             final_prediction.append(most_common)
 
         data = final_prediction
-        time_points = [i * 1 for i in range(len(data))]  # 每30秒一个数据点
-        import matplotlib.pyplot as plt
-
+        # 或者更清晰的写法：
+        time_points = [i / 120 for i in range(len(data))]  # 每30秒一个数据点（转换为小时）
+        
         # # 折线图
         # fig = plt.gcf()
         # fig.clf()
@@ -235,8 +284,6 @@ class OneFoldTrainer:
         # plt.xlabel('Time [h]')
         # plt.ylabel('Sleep Stage')
         # plt.show()
-
-
         # 折线图
         fig = plt.gcf()
         fig.clf()
@@ -260,27 +307,21 @@ class OneFoldTrainer:
         plt.tight_layout()
 
         filename = 'SC_predictions'
-        plt.savefig(r"C:\Users\clg\Desktop\降采样\{filename}.png".format(filename=filename), bbox_inches="tight")
-        plt.show()
-
-
-
-
-
+        save_fig_path = r"/home/chenlungan/算法模型/SleePyCo/results/{filename}.png".format(filename=filename)
+        plt.savefig(save_fig_path, bbox_inches="tight")
 
 
         print("最终预测结果（逐帧）：", final_prediction)
         df = pd.DataFrame({
             'Frame': range(1, len(final_prediction) + 1),
             'Predicted': final_prediction,
-            # 'real label': label_data[:len(final_prediction)]  # 假设标签为0，实际使用时请替换为真实标签
+             'real label': label_data[:len(final_prediction)]  # 假设标签为0，实际使用时请替换为真实标签
         })
+        df.to_csv(r"/home/chenlungan/算法模型/SleePyCo/results/SC_predictions.csv", index=False)
+
 
         print(f"[INFO] 总推理耗时: {total_time:.4f}s")
 
-        filename = '午休睡眠_predictions'
-        save_path = r"C:\Users\clg\Desktop\降采样\{filename}.csv".format(filename=filename)
-        df.to_csv(save_path, index=False)
 
         return final_prediction
 

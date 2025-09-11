@@ -36,6 +36,11 @@ class OneFoldTrainer:
         self.ckpt_name = 'ckpt_fold-{0:02d}.pth'.format(self.fold)
         self.early_stopping = EarlyStopping(patience=self.es_cfg['patience'], verbose=True, ckpt_path=self.ckpt_path, ckpt_name=self.ckpt_name, mode=self.es_cfg['mode'])
 
+        self.train_losses = []
+        self.val_losses = []    # 记录每个epoch的训练和验证损失
+           
+        self.fold_start_time = None
+        self.fold_end_time = None     # 添加训练时间记录
     def build_model(self):
         model = MainModel(self.cfg)
         print('[INFO] Number of params of model: ', sum(p.numel() for p in model.parameters() if p.requires_grad))
@@ -83,6 +88,14 @@ class OneFoldTrainer:
                 print('')
                 val_loss = self.evaluate(mode='val')
                 self.early_stopping(None, val_loss, self.model)
+
+                self.train_losses.append(train_loss)
+                self.val_losses.append(val_loss)
+
+                # 重置训练损失统计
+                train_loss = 0
+                num_batches = 0
+
                 self.model.train()
                 if self.early_stopping.early_stop:
                     break
@@ -109,11 +122,63 @@ class OneFoldTrainer:
         return eval_loss
     
     def run(self):
+        self.fold_start_time = time.time()
         for epoch in range(self.tp_cfg['max_epochs']):
             print('\n[INFO] Fold: {}, Epoch: {}'.format(self.fold, epoch))
             self.train_one_epoch()
             if self.early_stopping.early_stop:
                 break
+        
+        # 记录训练结束时间
+        self.fold_end_time = time.time()
+        fold_duration = self.fold_end_time - self.fold_start_time
+        # 计算训练时长
+        hours, remainder = divmod(fold_duration, 3600)
+        minutes, seconds = divmod(remainder, 60)
+
+        print(f'[INFO] Fold {self.fold} training completed at {time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.fold_end_time))}')
+        print(f'[INFO] Fold {self.fold} training duration: {int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}')
+        
+        loss_data = {
+            'train_losses': self.train_losses,
+            'val_losses': self.val_losses,
+            'training_time': fold_duration,  
+            'training_time_formatted': f'{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}'
+        }
+        os.makedirs(self.ckpt_path, exist_ok=True)
+        np.save(os.path.join(self.ckpt_path, f'losses_fold-{self.fold:02d}.npy'), loss_data)
+
+def determine_start_fold_by_loss(config):
+    """
+    通过检查loss文件来确定哪些fold需要训练
+    返回需要训练的fold列表而不是起始fold
+    """
+    ckpt_path = os.path.join('checkpoints', config['name'])
+    
+    # 如果检查点目录不存在，训练所有folds
+    if not os.path.exists(ckpt_path):
+        print('[INFO] Checkpoint directory does not exist, training all folds')
+        return list(range(1, config['dataset']['num_splits'] + 1))
+    
+    folds_to_train = []
+    num_folds = config['dataset']['num_splits']
+    
+    # 检查每个fold的loss文件是否存在
+    for fold in range(1, num_folds + 1):
+        loss_file = os.path.join(ckpt_path, f'losses_fold-{fold:02d}.npy')
+        
+        # 如果loss文件不存在，需要训练这个fold
+        if not os.path.exists(loss_file):
+            folds_to_train.append(fold)
+            print(f'[INFO] Loss file for fold {fold} not found, will train this fold')
+        else:
+            print(f'[INFO] Loss file for fold {fold} found, skipping this fold')
+    
+    # 如果所有fold都已完成，返回空列表
+    if not folds_to_train:
+        print('[INFO] All folds have been trained, no training needed')
+    
+    return folds_to_train
 
 def main():
     warnings.filterwarnings("ignore", category=DeprecationWarning) 
@@ -121,7 +186,7 @@ def main():
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--seed', type=int, default=42, help='random seed')
-    parser.add_argument('--gpu', type=str, default="0", help='gpu id')
+    parser.add_argument('--gpu', type=str, default="0,1,2,3,4,5,6,7", help='gpu id')
     parser.add_argument('--config', type=str, help='config file path')
     args = parser.parse_args()
 
@@ -135,7 +200,13 @@ def main():
         config = json.load(config_file)
     config['name'] = os.path.basename(args.config).replace('.json', '')
     
-    for fold in range(1, config['dataset']['num_splits'] + 1):
+    # 确定需要训练的folds
+    folds_to_train = determine_start_fold_by_loss(config)
+    print(f'[INFO] Folds to train: {folds_to_train}')
+    
+    # 只训练缺失的folds
+    for fold in folds_to_train:
+        print(f'[INFO] Starting training for fold {fold}')
         trainer = OneFoldTrainer(args, fold, config)
         trainer.run()
 
