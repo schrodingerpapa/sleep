@@ -5,6 +5,9 @@ import torch.nn as nn
 from typing import List
 import os
 import sys
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
 from resnet1d import FrameBackBone
 from timm.models.vision_transformer import Block
 from utils import get_2d_sincos_pos_embed_flexible
@@ -22,7 +25,7 @@ class NeuroNet(nn.Module):
         self.time_window = time_window
         self.time_step = time_step
 
-        self.num_patches, _ = frame_size(fs=fs, second=second, time_window=time_window, time_step=time_step)
+        self.num_patches, _ = frame_size(fs=fs, second=second, time_window=time_window, time_step=time_step) # 73, 300
         self.frame_backbone = FrameBackBone(fs=self.fs, window=self.time_window)
         self.autoencoder = MaskedAutoEncoderViT(input_size=self.frame_backbone.feature_num,
                                                 encoder_embed_dim=encoder_embed_dim, num_patches=self.num_patches,
@@ -33,7 +36,7 @@ class NeuroNet(nn.Module):
 
         projection_hidden = [encoder_embed_dim] + projection_hidden
         projectors = []
-        for i, (h1, h2) in enumerate(zip(projection_hidden[:-1], projection_hidden[1:])):
+        for i, (h1, h2) in enumerate(zip(projection_hidden[:-1], projection_hidden[1:])): # projection_hidden [768, 1024, 512]
             if i != len(projection_hidden) - 2:
                 projectors.append(nn.Linear(h1, h2))
                 projectors.append(nn.BatchNorm1d(h2))
@@ -84,12 +87,13 @@ class NeuroNet(nn.Module):
         loss = (loss * mask).sum() / mask.sum()
         return loss
 
-    def make_frame(self, x):
-        size = self.fs * self.second
-        step = int(self.time_step * self.fs)
-        window = int(self.time_window * self.fs)
+    def make_frame(self, x): 
+        # 切分成window大小的frame帧
+        size = self.fs * self.second # 100*30
+        step = int(self.time_step * self.fs) # 0.5*100
+        window = int(self.time_window * self.fs) # 5*100
         frame = []
-        for i in range(0, size, step):
+        for i in range(0, size, step): # 生成整数序列，步长为step
             start_idx, end_idx = i, i+window
             sample = x[..., start_idx: end_idx]
             if sample.shape[-1] == window:
@@ -103,14 +107,14 @@ class MaskedAutoEncoderViT(nn.Module):
                  encoder_embed_dim: int, encoder_heads: int, encoder_depths: int,
                  decoder_embed_dim: int, decoder_heads: int, decoder_depths: int):
         super().__init__()
-        self.patch_embed = nn.Linear(input_size, encoder_embed_dim)
+        self.patch_embed = nn.Linear(input_size, encoder_embed_dim) # 线性映射 维度 256->768
         self.cls_token = nn.Parameter(torch.zeros(1, 1, encoder_embed_dim))
         self.embed_dim = encoder_embed_dim
         self.encoder_depths = encoder_depths
         self.mlp_ratio = 4.
 
-        self.input_size = (num_patches, encoder_embed_dim)
-        self.patch_size = (1, encoder_embed_dim)
+        self.input_size = (num_patches, encoder_embed_dim) # 73, 768
+        self.patch_size = (1, encoder_embed_dim) # 1, 768
         self.grid_h = int(self.input_size[0] // self.patch_size[0])
         self.grid_w = int(self.input_size[1] // self.patch_size[1])
         self.num_patches = self.grid_h * self.grid_w
@@ -240,17 +244,18 @@ class MaskedAutoEncoderViT(nn.Module):
 
 
 def frame_size(fs, second, time_window, time_step):
-    x = np.random.randn(1, fs * second)
+    x = np.random.randn(1, fs * second) #x.shape = (1, 3000)
     size = fs * second
-    step = int(time_step * fs)
+    step = int(time_step * fs) # 步长37
     window = int(time_window * fs)
-    frame = []
+    frame = [] # 添加空列表
     for i in range(0, size, step):
         start_idx, end_idx = i, i + window
-        sample = x[..., start_idx: end_idx]
-        if sample.shape[-1] == window:
+        sample = x[..., start_idx: end_idx] # 维度切片，省略号表示所有前面的维度全部保留、截取
+        if sample.shape[-1] == window: #sample.shape=(1,300) 判断最后一维的长度是否等于window
             frame.append(sample)
-    frame = np.stack(frame, axis=1)
+    frame = np.stack(frame, axis=1) # 对于步长为0.375s，frame.shape = (1, 73, 300)
+    print("frame.shape:", frame.shape)
     return frame.shape[1], frame.shape[2]
 
 

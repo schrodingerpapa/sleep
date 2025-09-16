@@ -8,7 +8,7 @@ import warnings
 import os
 import glob
 
-warnings.filterwarnings("ignore", category=np.VisibleDeprecationWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 random_seed = 777
 np.random.seed(random_seed)
@@ -20,31 +20,17 @@ class TorchDataset(Dataset):
     def __init__(self, paths, sfreq, rfreq, scaler: bool = False):
         super().__init__()
         self.x, self.y = self.get_data(paths, sfreq, rfreq, scaler)
-        # 将数据转换为PyTorch张量，x为float32类型，y为long类型
         self.x, self.y = torch.tensor(self.x, dtype=torch.float32), torch.tensor(self.y, dtype=torch.long)
 
     @staticmethod
     def get_data(paths, sfreq, rfreq, scaler_flag):
-        """
-        从文件路径中加载数据并进行预处理
-        Args:
-            paths: 数据文件路径列表
-            sfreq: 原始采样频率
-            rfreq: 重采样频率
-            scaler_flag: 是否进行数据缩放
-        Returns:
-            total_x: 处理后的特征数据
-            total_y: 标签数据
-        """
-        # 创建MNE信息对象，定义EEG通道信息
         info = mne.create_info(sfreq=sfreq, ch_types='eeg', ch_names=['Fp1'])
-        # 创建数据缩放器，使用中位数缩放方法
         scaler = mne.decoding.Scaler(info=info, scalings='median')
         total_x, total_y = [], []
         for path in paths:
             data = np.load(path)
             x, y = data['x'], data['y']
-            x = np.expand_dims(x, axis=1)
+            x = np.expand_dims(x, axis=1) # 维度扩展->(sample,1)
             if scaler_flag:
                 x = scaler.fit_transform(x)
             x = mne.EpochsArray(x, info=info)
@@ -62,75 +48,67 @@ class TorchDataset(Dataset):
         x = torch.tensor(self.x[item])
         y = torch.tensor(self.y[item])
         return x, y
-            # 获取数据并去除维度为1的轴
-
 
 class EEGDataset(Dataset):
-        # 合并所有数据
     def __init__(self, config, fold, set='train'):
         super().__init__()
-        # 存储配置参数
-        self.config = config
-        """返回数据集大小"""
+        self.dset_name = config['Dataset']['name']
         self.fold = fold
         self.set = set
+        self.k_splits = config['Dataset']['k_splits']
+        self.eeg_channel = config['Dataset']['eeg_channel']
 
-        """获取指定索引的数据样本"""
-        # 从配置中获取参数
-        self.dset_cfg = config['dataset']
-        self.root_dir = self.dset_cfg['root_dir']  # 待修改
-        self.dset_name = self.dset_cfg['name']
-        self.eeg_channel = self.dset_cfg['eeg_channel']
-        self.seq_len = self.dset_cfg['seq_len']
-        self.target_idx = self.dset_cfg['target_idx']
-        self.k_splits = self.dset_cfg['k_splits']
-
-        # 加载数据
-        self.x, self.y = self.get_data()
-        # 转换为PyTorch张量
-        self.x, self.y = torch.tensor(self.x, dtype=torch.float32), torch.tensor(self.y, dtype=torch.long)
-
-    def get_data(self):
-        """加载数据并按照序列长度提取样本"""
-        # 获取对应的数据文件列表
-        data_files = self.split_dataset()
-
-        total_x, total_y = [], []
-
-        # 处理每个文件
-        for file_path in data_files:
-            npz_file = np.load(file_path)
-            x, y = npz_file['x'], npz_file['y']
-
-            # 处理序列长度（MASS数据集特殊处理）
-            seq_len = self.seq_len
-            if self.dset_name == 'MASS' and ('-02-' in os.path.basename(file_path) or
-                                             '-04-' in os.path.basename(file_path) or
-                                             '-05-' in os.path.basename(file_path)):
-                seq_len = int(self.seq_len * 1.5)
-
-            # 提取有效样本
-            for i in range(len(y) - seq_len + 1):
-                x_segment = x[i:i + seq_len]
-                y_segment = y[i:i + seq_len][self.target_idx]  # 提取目标标签
-
-                total_x.append(x_segment)
-                total_y.append(y_segment)
-
-        # 合并所有数据
-        return np.concatenate(total_x), np.concatenate(total_y)
-
-    def split_dataset(self):  # 划分数据集
+        self.seq_len = config['Dataset']['seq_len']  # 从配置中读取
+        self.target_idx = config['Dataset']['target_idx']
+        self.sr = config['Dataset']['sfreq']  # 从配置中读取采样率
+        self.dataset_path = os.path.join('/home/chenlungan/公开数据集', self.dset_name,'npz')
+        
+        print(f"Initializing dataset: {self.dset_name}, fold: {self.fold}, set: {self.set}")
+        print(f"Dataset path: {self.dataset_path}")
+        print(f"EEG channel: {self.eeg_channel}")
+        
+        self.inputs, self.labels, self.epochs = self.split_dataset()
+        print(f"Dataset loaded with {len(self.epochs)} samples")
+        
+        # 如果是空数据集，确保返回正确的维度
+        self.n_sample = 30 * self.sr * self.seq_len
+        
+    def split_dataset(self):
+        """
+        划分数据集并加载数据
+        Returns:
+            inputs: 特征数据
+            labels: 标签数据
+            epochs: 样本索引信息
+        """
         file_idx = 0
         inputs, labels, epochs = [], [], []
         data_root = os.path.join(self.dataset_path, self.eeg_channel)
+        
+        # 检查数据根目录是否存在
+        if not os.path.exists(data_root):
+            raise FileNotFoundError(f"Data directory does not exist: {data_root}")
+        
+        print(f"Looking for data in: {data_root}")
         data_fname_list = [os.path.basename(x) for x in sorted(glob.glob(os.path.join(data_root, '*.npz')))]
+        print(f"Found {len(data_fname_list)} .npz files")
+        
+        if len(data_fname_list) == 0:
+            raise ValueError(f"No .npz files found in {data_root}")
+        
         data_fname_dict = {'train': [], 'test': [], 'val': []}
-        split_idx_list = np.load(os.path.join('./split_idx', 'idx_{}.npy'.format(self.dset_name)),
-                                 allow_pickle=True)  # 读取划分数据集的索引
+        split_idx_file = os.path.join('/home/chenlungan/算法模型/NeuroNet/split_idx', f'idx_{self.dset_name}.npy')
+        
+        # 检查索引文件是否存在
+        if not os.path.exists(split_idx_file):
+            raise FileNotFoundError(f"Split index file not found: {split_idx_file}")
+            
+        split_idx_list = np.load(split_idx_file, allow_pickle=True)
+        print(f"Loaded split index with {len(split_idx_list)} folds")
 
         assert len(split_idx_list) == self.k_splits
 
+        # 根据数据集名称划分数据
         if self.dset_name == 'Sleep-EDF-2013':
             for i in range(len(data_fname_list)):
                 subject_idx = int(data_fname_list[i][3:5])
@@ -142,33 +120,99 @@ class EEGDataset(Dataset):
                     data_fname_dict['train'].append(data_fname_list[i])
 
         elif self.dset_name == 'Sleep-EDF-2018':
+            # 检查fold索引是否有效
+            if self.fold - 1 >= len(split_idx_list):
+                raise ValueError(f"Fold {self.fold} is out of range for {len(split_idx_list)} folds")
+                
+            fold_data = split_idx_list[self.fold - 1]
+            print(f"Fold data keys: {list(fold_data.keys())}")
+            
+            # 检查set键是否存在
+            if self.set not in fold_data:
+                raise ValueError(f"Set '{self.set}' not found in fold {self.fold} data")
+                
             for i in range(len(data_fname_list)):
                 subject_idx = int(data_fname_list[i][3:5])
-                if subject_idx in split_idx_list[self.fold - 1][self.set]:
+                if subject_idx in fold_data[self.set]:
                     data_fname_dict[self.set].append(data_fname_list[i])
 
-        elif self.dset_name == 'MASS' or self.dset_name == 'Physio2018' or self.dset_name == 'SHHS':
+        elif self.dset_name in ['MASS', 'Physio2018', 'SHHS']:
             for i in range(len(data_fname_list)):
                 if i in split_idx_list[self.fold - 1][self.set]:
                     data_fname_dict[self.set].append(data_fname_list[i])
         else:
-            raise NameError("dataset '{}' cannot be found.".format(self.dataset))
+            raise NameError(f"Dataset '{self.dset_name}' cannot be found.")
+            
+        print(f"Selected files for {self.set}: {len(data_fname_dict[self.set])}")
+        if len(data_fname_dict[self.set]) > 0:
+            print(f"File list (first 5): {data_fname_dict[self.set][:5]}")
 
+        # 加载数据并处理序列
         for data_fname in data_fname_dict[self.set]:
-            npz_file = np.load(os.path.join(data_root, data_fname))
-            inputs.append(npz_file['x'])
-            labels.append(npz_file['y'])
+            file_path = os.path.join(data_root, data_fname)
+            print(f"Loading file: {file_path}")
+            npz_file = np.load(file_path)
+            x, y = npz_file['x'], npz_file['y']
+            print(f"  Data shape: x={x.shape}, y={y.shape}")
             seq_len = self.seq_len
+
+            # 动态调整序列长度（针对 MASS 数据集）
             if self.dset_name == 'MASS' and ('-02-' in data_fname or '-04-' in data_fname or '-05-' in data_fname):
                 seq_len = int(self.seq_len * 1.5)
-            for i in range(len(npz_file['y']) - seq_len + 1):
-                epochs.append([file_idx, i, seq_len])
-            file_idx += 1
 
-        return inputs, labels, epochs
+            # 提取有效样本
+            available_samples = len(y) - seq_len + 1
+            print(f"  Available samples: {available_samples}, seq_len: {seq_len}")
+            if available_samples > 0:
+                inputs.append(x)
+                labels.append(y)
+                for i in range(available_samples):
+                    epochs.append([file_idx, i, seq_len])
+                file_idx += 1
+            else:
+                print(f"  Warning: Not enough data in {data_fname} for seq_len={seq_len}")
+
+        print(f"Total samples loaded: {len(epochs)}")
+        return np.array(inputs, dtype=object), np.array(labels, dtype=object), epochs
 
     def __len__(self):
-        return len(self.y)
+        return len(self.epochs)
 
-    def __getitem__(self, item):
-        return self.x[item], self.y[item]
+    def __getitem__(self, idx):
+        # 如果数据集为空，返回默认数据
+        if len(self.epochs) == 0:
+            # 返回正确维度的默认数据 [1, n_sample]
+            inputs = torch.zeros(1, self.n_sample, dtype=torch.float32)
+            labels = torch.tensor(0, dtype=torch.long)
+            return inputs, labels
+            
+        if idx >= len(self.epochs):
+            raise IndexError(f"Index {idx} is out of range for dataset with {len(self.epochs)} samples")
+            
+        file_idx, idx, seq_len = self.epochs[idx]
+        
+        # 确保索引有效
+        if file_idx < len(self.inputs) and len(self.inputs[file_idx]) > 0:
+            inputs = self.inputs[file_idx][idx:idx+seq_len]
+        else:
+            # 如果数据无效，返回默认值
+            inputs = np.zeros((seq_len, 3000))
+        
+        # 检查输入数据是否为空
+        if inputs.size == 0:
+            inputs = np.zeros((seq_len, 3000))
+        
+        # 确保数据形状正确 [1, n_sample]
+        inputs = inputs.reshape(1, self.n_sample)
+        inputs = torch.from_numpy(inputs).float()
+        
+        # 处理标签数据
+        if file_idx < len(self.labels) and len(self.labels[file_idx]) > 0:
+            labels = self.labels[file_idx][idx:idx+seq_len]
+        else:
+            labels = np.array([0] * seq_len)
+            
+        labels = torch.from_numpy(labels).long()
+        labels = labels[self.target_idx]
+        
+        return inputs, labels

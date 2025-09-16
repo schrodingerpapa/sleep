@@ -8,6 +8,7 @@ class FrameBackBone(nn.Module):
         super().__init__()
         self.model = BackBone(input_size=fs * window, input_channel=1, layers=[1, 1, 1, 1])
         self.feature_num = self.model.get_final_length() // 2
+
         self.feature_layer = nn.Sequential(
             nn.Linear(self.model.get_final_length(), self.feature_num),
             nn.ELU(),
@@ -33,10 +34,10 @@ class BackBone(nn.Module):
         self.inplanes7 = 32
 
         self.input_size = input_size
-        self.conv1 = nn.Conv1d(input_channel, 32, kernel_size=7, stride=2, padding=3, bias=False)
+        self.conv1 = nn.Conv1d(input_channel, 32, kernel_size=7, stride=2, padding=3, bias=False) # out: B,32,150
         self.bn1 = nn.BatchNorm1d(32)
         self.relu = nn.ELU(inplace=True)
-        self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
+        self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1) # out: B,32,75
 
         self.layer3x3_1 = self._make_layer3(BasicBlock3x3, 32, layers[0], stride=1)
         self.layer3x3_2 = self._make_layer3(BasicBlock3x3, 32, layers[1], stride=1)
@@ -59,11 +60,13 @@ class BackBone(nn.Module):
     def forward(self, x0):
         b = x0.shape[0]
         x0 = self.conv1(x0)
+        print(x0.shape)
         x0 = self.bn1(x0)
         x0 = self.relu(x0)
         x0 = self.maxpool(x0)
+        print(x0.shape)
 
-        x1 = self.layer3x3_1(x0)
+        x1 = self.layer3x3_1(x0) # 1,32,75
         x1 = self.layer3x3_2(x1)
         x1 = self.layer3x3_3(x1)
         x1 = self.layer3x3_4(x1)

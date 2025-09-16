@@ -2,11 +2,13 @@
     "Dataset": {
         "name": "Sleep-EDF-2018",
         "eeg_channel": "Fpz-Cz",
-        "k_splits": 5,
+        "k_splits": 10,
         "n_fold": 0,
         "sfreq": 100,
         "rfreq": 100,
         "data_scaler": false,
+        "target_idx": 0,
+        "seq_len": 1,
 
         "second": 30,
         "time_window": 3,

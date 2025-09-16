@@ -1,6 +1,8 @@
 # -*- coding:utf-8 -*-
 import os
 import json
+
+
 import sys
 import mne
 import torch
@@ -10,15 +12,20 @@ import argparse
 import warnings
 import numpy as np
 import torch.optim as opt
-from ..model.utils import model_size, set_random_seed
+
+# 添加项目根目录到 Python 路径
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
+
+from model.utils import model_size, set_random_seed
 from sklearn.decomposition import PCA
 from torch.utils.tensorboard import SummaryWriter
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import accuracy_score, f1_score
 from torch.utils.data import DataLoader
-from ..dataset.utils import split_train_test_val_files
-from data_loader import TorchDataset
-from ..model.neuronet import NeuroNet
+from dataset.utils import split_train_test_val_files
+from data_loader import EEGDataset
+from model.neuronet import NeuroNet
 warnings.filterwarnings(action='ignore')
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -66,13 +73,13 @@ class Trainer:
         self.train_batch_accumulation = self.config['training_params']['train_batch_accumulation']
         self.eff_batch_size = self.batch_size * self.train_batch_accumulation
 
-        self.train_base_learning_rate = self.config['training_params']['base_learning_rate']
+        self.train_base_learning_rate = self.config['training_params']['train_base_learning_rate']
 
         self.lr = self.train_base_learning_rate * self.eff_batch_size / 256
         self.model = self.build_model()
 
         self.optimizer = opt.AdamW(self.model.parameters(), lr=self.lr)
-        self.train_paths, self.val_paths, self.eval_paths = self.data_paths()
+        # self.train_paths, self.val_paths, self.eval_paths = self.data_paths()
         self.scheduler = opt.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=self.train_epochs)
         self.tensorboard_path = os.path.join(self.ckpt_path, self.model_name,
                                              str(self.n_fold), 'tensorboard')
@@ -85,10 +92,10 @@ class Trainer:
 
         print('Model Size : {0:.2f}MB'.format(model_size(self.model)))
 
-        print('Frame Size : {}'.format(self.model.num_patches))
+        print('Frame Size : {}'.format(self.num_patches))
         print('Leaning Rate : {0}'.format(self.lr))
-        print('Validation Paths : {0}'.format(len(self.val_paths)))
-        print('Evaluation Paths : {0}'.format(len(self.eval_paths)))
+        # print('Validation Paths : {0}'.format(len(self.val_paths)))
+        # print('Evaluation Paths : {0}'.format(len(self.eval_paths)))
 
     def build_model(self):
         model = NeuroNet(
@@ -98,6 +105,9 @@ class Trainer:
             decoder_heads=self.decoder_heads, decoder_depths=self.decoder_depths,
             projection_hidden=self.projection_hidden, temperature=self.temperature
         )
+        # 保存需要访问的属性
+        self.num_patches = model.num_patches # 73
+        
         print('[INFO] Number of params of model: ', sum(p.numel() for p in model.parameters() if p.requires_grad))
         model = torch.nn.DataParallel(model, device_ids=list(range(len(self.args.gpu.split(",")))))
         model.to(self.device)
@@ -106,14 +116,11 @@ class Trainer:
 
     def train(self):
         print('K-Fold : {}/{}'.format(self.n_fold , self.k_splits))
-        train_dataset = TorchDataset(paths=self.train_paths, sfreq=self.raw_fs, rfreq=self.fs,
-                                     scaler=self.data_scaler)
+        train_dataset = EEGDataset(self.config, self.n_fold, set='train')
         train_dataloader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
-        val_dataset = TorchDataset(paths=self.val_paths, sfreq=self.raw_fs, rfreq=self.fs,
-                                   scaler=self.data_scaler)
+        val_dataset = EEGDataset(self.config, self.n_fold, set='val')
         val_dataloader = DataLoader(val_dataset, batch_size=self.batch_size, drop_last=True)
-        eval_dataset = TorchDataset(paths=self.eval_paths, sfreq=self.raw_fs, rfreq=self.fs,
-                                    scaler=self.data_scaler)
+        eval_dataset = EEGDataset(self.config, self.n_fold, set='test')
         eval_dataloader = DataLoader(eval_dataset, batch_size=self.batch_size, drop_last=True)
 
         total_step = 0
@@ -125,7 +132,9 @@ class Trainer:
             self.optimizer.zero_grad()
 
             for x, _ in train_dataloader:
-                x = x.to(device)
+                print('x shape:', x.shape)
+                x = x.to(device) # x shape: (n_sample, 3000)
+                print('x shape:', x.shape)
                 out = self.model(x, mask_ratio=self.mask_ratio)
                 recon_loss, contrastive_loss, (cl_labels, cl_logits) = out
 
@@ -212,15 +221,15 @@ class Trainer:
                 'projection_hidden': self.projection_hidden, 'temperature': self.temperature
             },
             'hyperparameter': self.__dict__,
-            'paths': {'train_paths': self.train_paths, 'ft_paths': self.val_paths, 'eval_paths': self.eval_paths}
+            #'paths': {'train_paths': self.train_paths, 'ft_paths': self.val_paths, 'eval_paths': self.eval_paths}
         }, os.path.join(ckpt_path, 'best_model.pth'))
 
-    def data_paths(self):
-        kf = split_train_test_val_files(base_path=self.base_path, n_splits=self.k_splits)
+    # def data_paths(self):
+    #     kf = split_train_test_val_files(base_path=self.base_path, n_splits=self.k_splits)
 
-        paths = kf[self.n_fold]
-        train_paths, ft_paths, eval_paths = paths['train_paths'], paths['ft_paths'], paths['eval_paths']
-        return train_paths, ft_paths, eval_paths
+    #     paths = kf[self.n_fold]
+    #     train_paths, ft_paths, eval_paths = paths['train_paths'], paths['ft_paths'], paths['eval_paths']
+    #     return train_paths, ft_paths, eval_paths
 
     @staticmethod
     def compute_metrics(output, target):
@@ -235,8 +244,8 @@ def main():
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--seed', type=int, default=777, help='random seed')
-    parser.add_argument('--gpu', type=str, default="0", help='gpu id')
-    parser.add_argument('--config', type=str, help='config file path')
+    parser.add_argument('--gpu', type=str, default="0,1,2,3,4,5,6,7", help='gpu id')
+    parser.add_argument('--config', type=str,default="/home/chenlungan/算法模型/NeuroNet/configs/model.json" ,help='config file path')
     args = parser.parse_args()
 
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
