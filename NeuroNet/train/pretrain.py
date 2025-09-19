@@ -2,7 +2,6 @@
 import os
 import json
 
-
 import sys
 import mne
 import torch
@@ -12,6 +11,7 @@ import argparse
 import warnings
 import numpy as np
 import torch.optim as opt
+from tqdm import tqdm 
 
 # 添加项目根目录到 Python 路径
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -126,17 +126,26 @@ class Trainer:
         total_step = 0
         best_model_state, best_score = self.model.state_dict(), 0
 
-        for epoch in range(self.train_epochs):
+        for epoch in range(self.train_epochs): # 训练轮数30
             step = 0
             self.model.train()
             self.optimizer.zero_grad()
 
-            for x, _ in train_dataloader:
-                print('x shape:', x.shape)
-                x = x.to(device) # x shape: (n_sample, 3000)
-                print('x shape:', x.shape)
-                out = self.model(x, mask_ratio=self.mask_ratio)
+            # 使用tqdm显示训练进度
+            pbar = tqdm(train_dataloader, desc=f'Epoch {epoch+1}/{self.train_epochs}')
+
+            for x, _ in pbar:
+                # print('x shape:', x.shape)
+                x = x.to(device) # x shape: (B,1,3000)
+                # print('x shape to device:', x.shape)
+                out = self.model(x, mask_ratio=self.mask_ratio) # 调用模型，传入forward函数，返回loss
                 recon_loss, contrastive_loss, (cl_labels, cl_logits) = out
+                
+                # 多卡并行计算，确保损失是标量
+                if hasattr(recon_loss, 'shape') and recon_loss.dim() > 0:
+                    recon_loss = recon_loss.mean()
+                if hasattr(contrastive_loss, 'shape') and contrastive_loss.dim() > 0:
+                    contrastive_loss = contrastive_loss.mean()
 
                 loss = recon_loss + self.alpha * contrastive_loss
                 loss.backward()
@@ -145,12 +154,15 @@ class Trainer:
                     self.optimizer.step()
                     self.optimizer.zero_grad()
 
+                # 更新进度条显示
                 if (total_step + 1) % self.print_point == 0:
-                    print('[Epoch] : {0:03d}  [Step] : {1:06d}  '
-                          '[Reconstruction Loss] : {2:02.4f}  [Contrastive Loss] : {3:02.4f}  '
-                          '[Total Loss] : {4:02.4f}  [Contrastive Acc] : {5:02.4f}'.format(
-                            epoch, total_step + 1, recon_loss, contrastive_loss, loss,
-                            self.compute_metrics(cl_logits, cl_labels)))
+                    acc = self.compute_metrics(cl_logits, cl_labels)
+                    pbar.set_postfix({
+                        'Recon Loss': f'{recon_loss.item():.4f}',
+                        'Contrast Loss': f'{contrastive_loss.item():.4f}',
+                        'Total Loss': f'{loss.item():.4f}',
+                        'Acc': f'{acc.item():.4f}'
+                    })
 
                 self.tensorboard_writer.add_scalar('Reconstruction Loss', recon_loss, total_step)
                 self.tensorboard_writer.add_scalar('Contrastive loss', contrastive_loss, total_step)
