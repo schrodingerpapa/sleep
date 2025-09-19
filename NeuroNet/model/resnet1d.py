@@ -6,22 +6,24 @@ import torch.nn as nn
 class FrameBackBone(nn.Module):
     def __init__(self, fs: int, window: int):
         super().__init__()
-        self.model = BackBone(input_size=fs * window, input_channel=1, layers=[1, 1, 1, 1])
-        self.feature_num = self.model.get_final_length() // 2
+        self.model = BackBone(
+            input_size=fs * window, input_channel=1, layers=[1, 1, 1, 1]
+        )
+        self.feature_num = self.model.get_final_length() // 2 # out：(B,512) , out.shape[-1]=512, feature_num//2=256
         print("feature_num:", self.feature_num)
 
         self.feature_layer = nn.Sequential(
             nn.Linear(self.model.get_final_length(), self.feature_num),
             nn.ELU(),
-            nn.Linear(self.feature_num, self.feature_num)
-        )
+            nn.Linear(self.feature_num, self.feature_num),
+        ) # 全连接层,512 -> 256，激活函数ELU{x<0)=exp(x)-1, x>=0=x}，256->256
 
     def forward(self, x):
         latent_seq = []
         for i in range(x.shape[1]):
-            sample = torch.unsqueeze(x[:, i, :], dim=1)
+            sample = torch.unsqueeze(x[:, i, :], dim=1) # x[:, i, :]：张量 x 中进行数据切片，其维度为2--(B,L),再升维成(B,1,L)
             latent = self.model(sample)
-            latent_seq.append(latent)
+            latent_seq.append(latent) 
         latent_seq = torch.stack(latent_seq, dim=1)
         latent_seq = self.feature_layer(latent_seq)
         return latent_seq
@@ -35,17 +37,23 @@ class BackBone(nn.Module):
         self.inplanes7 = 32
 
         self.input_size = input_size
-        self.conv1 = nn.Conv1d(input_channel, 32, kernel_size=7, stride=2, padding=3, bias=False) # out: B,32,150
+        self.conv1 = nn.Conv1d(
+            input_channel, 32, kernel_size=7, stride=2, padding=3, bias=False
+        )  # out: B,32,150
         self.bn1 = nn.BatchNorm1d(32)
         self.relu = nn.ELU(inplace=True)
-        self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1) # out: B,32,75
+        self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)  # out: B,32,75
 
         """
         conv3x3  nn.Conv1d(in_planes, out_planes, kernel_size=3, stride=stride,padding=1, bias=False)
         """
 
-        self.layer3x3_1 = self._make_layer3(BasicBlock3x3, 32, layers[0], stride=1) # out: B,32,75
-        self.layer3x3_2 = self._make_layer3(BasicBlock3x3, 32, layers[1], stride=1) # out: B,32,75
+        self.layer3x3_1 = self._make_layer3(
+            BasicBlock3x3, 32, layers[0], stride=1
+        )  # out: B,32,75
+        self.layer3x3_2 = self._make_layer3(
+            BasicBlock3x3, 32, layers[1], stride=1
+        )  # out: B,32,75
         self.layer3x3_3 = self._make_layer3(BasicBlock3x3, 48, layers[2], stride=2)
         self.layer3x3_4 = self._make_layer3(BasicBlock3x3, 64, layers[3], stride=2)
         self.maxpool3 = nn.AvgPool1d(kernel_size=16, stride=1, padding=0)
@@ -70,43 +78,33 @@ class BackBone(nn.Module):
         :return: [batch_size,feature_num]
         256-->32
         """
-        print("input shape:", x0.shape)
+        # x0 shape: B,1,300
         b = x0.shape[0]
         x0 = self.conv1(x0)
-        print(x0.shape)
         x0 = self.bn1(x0)
         x0 = self.relu(x0)
-        x0 = self.maxpool(x0) # B,32,7
-        print("x0.maxpool-shape",x0.shape)
+        x0 = self.maxpool(x0)  # B,32,75
 
-        x1 = self.layer3x3_1(x0) # 1,32,75
+        x1 = self.layer3x3_1(x0)  # B,32,75
         x1 = self.layer3x3_2(x1)
-        print("x1_2:", x1.shape)
         x1 = self.layer3x3_3(x1)
         x1 = self.layer3x3_4(x1)
-        print("x1_4:", x1.shape)
-        x1 = self.maxpool3(x1) # B,64,14
-        
+        x1 = self.maxpool3(x1)  # B,64,4
 
         x2 = self.layer5x5_1(x0)
         x2 = self.layer5x5_2(x2)
-        print("x2_2:", x2.shape)
         x2 = self.layer5x5_3(x2)
         x2 = self.layer5x5_4(x2)
-        print("x2_4:", x2.shape)
-        x2 = self.maxpool5(x2) # B,64,3
+        x2 = self.maxpool5(x2)  # B,64,3
 
         x3 = self.layer7x7_1(x0)
-        x3 = self.layer7x7_2(x3)
-        print("x3_2:", x3.shape)
+        x3 = self.layer7x7_2(x3)  # B,32,59
         x3 = self.layer7x7_3(x3)
-        x3 = self.layer7x7_4(x3)
-        print("x3_4:", x3.shape)
-        x3 = self.maxpool7(x3) # B,64,1
+        x3 = self.layer7x7_4(x3)  # B,64,6
+        x3 = self.maxpool7(x3)  # B,64,1
 
-        out = torch.cat([x1, x2, x3], dim=-1) #B,64,8
-        out = torch.reshape(out, [b, -1])
-        print("out_reshape:", out.shape)
+        out = torch.cat([x1, x2, x3], dim=-1)  # B,64,8
+        out = torch.reshape(out, [b, -1])  # B,64,8 --> B,512
         return out
 
     def _make_layer3(self, block, planes, blocks, stride=2):
@@ -115,8 +113,13 @@ class BackBone(nn.Module):
 
         if stride != 1 or self.inplanes3 != planes * block.expansion:
             downsample = nn.Sequential(
-                nn.Conv1d(self.inplanes3, planes * block.expansion,
-                          kernel_size=1, stride=stride, bias=False),
+                nn.Conv1d(
+                    self.inplanes3,
+                    planes * block.expansion,
+                    kernel_size=1,
+                    stride=stride,
+                    bias=False,
+                ),
                 nn.BatchNorm1d(planes * block.expansion),
             )
 
@@ -132,8 +135,13 @@ class BackBone(nn.Module):
         downsample = None
         if stride != 1 or self.inplanes5 != planes * block.expansion:
             downsample = nn.Sequential(
-                nn.Conv1d(self.inplanes5, planes * block.expansion,
-                          kernel_size=1, stride=stride, bias=False),
+                nn.Conv1d(
+                    self.inplanes5,
+                    planes * block.expansion,
+                    kernel_size=1,
+                    stride=stride,
+                    bias=False,
+                ),
                 nn.BatchNorm1d(planes * block.expansion),
             )
 
@@ -149,8 +157,13 @@ class BackBone(nn.Module):
         downsample = None
         if stride != 1 or self.inplanes7 != planes * block.expansion:
             downsample = nn.Sequential(
-                nn.Conv1d(self.inplanes7, planes * block.expansion,
-                          kernel_size=1, stride=stride, bias=False),
+                nn.Conv1d(
+                    self.inplanes7,
+                    planes * block.expansion,
+                    kernel_size=1,
+                    stride=stride,
+                    bias=False,
+                ),
                 nn.BatchNorm1d(planes * block.expansion),
             )
 
@@ -169,11 +182,11 @@ class BackBone(nn.Module):
 
 
 class BasicBlock3x3(nn.Module):
-    expansion = 1 #扩展因子，用于计算输出通道数
+    expansion = 1  # 扩展因子，用于计算输出通道数
 
     def __init__(self, inplanes3, planes, stride=1, downsample=None):
         super(BasicBlock3x3, self).__init__()
-        self.conv1 = conv3x3(inplanes3, planes, stride) #卷积核大小为3x3
+        self.conv1 = conv3x3(inplanes3, planes, stride)  # 卷积核大小为3x3
         self.bn1 = nn.BatchNorm1d(planes)
         self.relu = nn.ELU(inplace=True)
         self.conv2 = conv3x3(planes, planes)
@@ -265,28 +278,28 @@ class BasicBlock7x7(nn.Module):
 
 
 def conv3x3(in_planes, out_planes, stride=1):
-    return nn.Conv1d(in_planes, out_planes, kernel_size=3, stride=stride,
-                     padding=1, bias=False)
+    return nn.Conv1d(
+        in_planes, out_planes, kernel_size=3, stride=stride, padding=1, bias=False
+    )
 
 
 def conv5x5(in_planes, out_planes, stride=1):
-    return nn.Conv1d(in_planes, out_planes, kernel_size=5, stride=stride,
-                     padding=1, bias=False)
+    return nn.Conv1d(
+        in_planes, out_planes, kernel_size=5, stride=stride, padding=1, bias=False
+    )
 
 
 def conv7x7(in_planes, out_planes, stride=1):
-    return nn.Conv1d(in_planes, out_planes, kernel_size=7, stride=stride,
-                     padding=1, bias=False)
+    return nn.Conv1d(
+        in_planes, out_planes, kernel_size=7, stride=stride, padding=1, bias=False
+    )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # st = ST_BackBone(input_size=500)
     # ss = st(
     #     torch.randn(50, 1, 500)
     # )
     fb = FrameBackBone(fs=100, window=3)
-    ss = fb(
-        torch.randn(50, 1, 300)
-    )
+    ss = fb(torch.randn(50, 1, 300))
     print(ss.shape)
-

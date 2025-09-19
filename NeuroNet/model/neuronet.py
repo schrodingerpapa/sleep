@@ -5,6 +5,7 @@ import torch.nn as nn
 from typing import List
 import os
 import sys
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
@@ -16,35 +17,60 @@ from functools import partial
 
 
 class NeuroNet(nn.Module):
-    def __init__(self, fs: int, second: int, time_window: int, time_step: float,
-                 encoder_embed_dim, encoder_heads: int, encoder_depths: int,
-                 decoder_embed_dim: int, decoder_heads: int, decoder_depths: int,
-                 projection_hidden: List, temperature=0.01):
+    def __init__(
+        self,
+        fs: int,
+        second: int,
+        time_window: int,
+        time_step: float,
+        encoder_embed_dim,
+        encoder_heads: int,
+        encoder_depths: int,
+        decoder_embed_dim: int,
+        decoder_heads: int,
+        decoder_depths: int,
+        projection_hidden: List,
+        temperature=0.01,
+    ):
         super().__init__()
         self.fs, self.second = fs, second
         self.time_window = time_window
         self.time_step = time_step
 
-        self.num_patches, _ = frame_size(fs=fs, second=second, time_window=time_window, time_step=time_step) # 73, 300
+        self.num_patches, _ = frame_size(
+            fs=fs, second=second, time_window=time_window, time_step=time_step
+        )  # 73, 300
         self.frame_backbone = FrameBackBone(fs=self.fs, window=self.time_window)
-        self.autoencoder = MaskedAutoEncoderViT(input_size=self.frame_backbone.feature_num,
-                                                encoder_embed_dim=encoder_embed_dim, num_patches=self.num_patches,
-                                                encoder_heads=encoder_heads, encoder_depths=encoder_depths,
-                                                decoder_embed_dim=decoder_embed_dim, decoder_heads=decoder_heads,
-                                                decoder_depths=decoder_depths)
+        self.autoencoder = MaskedAutoEncoderViT(
+            input_size=self.frame_backbone.feature_num,
+            encoder_embed_dim=encoder_embed_dim,
+            num_patches=self.num_patches,
+            encoder_heads=encoder_heads,
+            encoder_depths=encoder_depths,
+            decoder_embed_dim=decoder_embed_dim,
+            decoder_heads=decoder_heads,
+            decoder_depths=decoder_depths,
+        )
         self.contrastive_loss = NTXentLoss(temperature=temperature)
 
         projection_hidden = [encoder_embed_dim] + projection_hidden
         projectors = []
-        for i, (h1, h2) in enumerate(zip(projection_hidden[:-1], projection_hidden[1:])): # projection_hidden [768, 1024, 512]
+        # Projection构建循环，对于非最后一层，添加线性层、BN层、激活函数，最后一层只添加线性层
+        for i, (h1, h2) in enumerate(
+            zip(projection_hidden[:-1], projection_hidden[1:])
+        ):  # projection_hidden [768, 1024, 512]
             if i != len(projection_hidden) - 2:
                 projectors.append(nn.Linear(h1, h2))
                 projectors.append(nn.BatchNorm1d(h2))
                 projectors.append(nn.ELU())
             else:
                 projectors.append(nn.Linear(h1, h2))
-        self.projectors = nn.Sequential(*projectors)
-        self.projectors_bn = nn.BatchNorm1d(projection_hidden[-1], affine=False)
+        self.projectors = nn.Sequential(
+            *projectors
+        )  # *表示解包操作符，将列表解包成多个参数传入函数
+        self.projectors_bn = nn.BatchNorm1d(
+            projection_hidden[-1], affine=False
+        )  # BN层仅作为归一化使用，不进行仿射变换（无学习参数）
         self.norm_pix_loss = False
 
     def forward(self, x: torch.Tensor, mask_ratio: float = 0.5) -> (torch.Tensor, torch.Tensor):
@@ -58,11 +84,12 @@ class NeuroNet(nn.Module):
         recon_loss1 = self.forward_mae_loss(x, pred1, mask1)
         recon_loss2 = self.forward_mae_loss(x, pred2, mask2)
         recon_loss = recon_loss1 + recon_loss2
+        # print("重建损失：",recon_loss)
 
         # Contrastive Learning
         o1, o2 = self.projectors(o1), self.projectors(o2)
         contrastive_loss, (labels, logits) = self.contrastive_loss(o1, o2)
-        print(contrastive_loss)
+        # print("对比损失：",contrastive_loss)
         return recon_loss, contrastive_loss, (labels, logits)
 
     def forward_latent(self, x: torch.Tensor):
@@ -72,73 +99,132 @@ class NeuroNet(nn.Module):
         latent_o = latent[:, :1, :].squeeze()
         return latent_o
 
-    def forward_mae_loss(self,
-                         real: torch.Tensor,
-                         pred: torch.Tensor,
-                         mask: torch.Tensor):
+    def forward_mae_loss(
+        self, real: torch.Tensor, pred: torch.Tensor, mask: torch.Tensor
+    ):
 
         if self.norm_pix_loss:
             mean = real.mean(dim=-1, keepdim=True)
             var = real.var(dim=-1, keepdim=True)
-            real = (real - mean) / (var + 1.e-6) ** .5
+            real = (real - mean) / (var + 1.0e-6) ** 0.5
 
         loss = (pred - real) ** 2
         loss = loss.mean(dim=-1)
         loss = (loss * mask).sum() / mask.sum()
         return loss
 
-    def make_frame(self, x): 
-        # 切分成window大小的frame帧
-        size = self.fs * self.second # 100*30
-        step = int(self.time_step * self.fs) # 0.5*100
-        window = int(self.time_window * self.fs) # 5*100
-        frame = []
-        for i in range(0, size, step): # 生成整数序列，步长为step
-            start_idx, end_idx = i, i+window
-            sample = x[..., start_idx: end_idx]
+    def make_frame(self, x):
+        """
+        输入 x 可以是:
+        - [B, L]  (推荐)
+        - [B, 1, L] (来自 dataset,含 channel 维)
+        返回:
+        - frame: [B, num_frames, window]  （每个 frame 是长度 window 的向量）
+        """
+        # 兼容性处理：如果有 channel 维（1），去掉它
+        if x.dim() == 3 and x.size(1) == 1:
+            x = x.squeeze(1)  # [B, L]
+        elif x.dim() == 1:
+            # 单条样本 -> 变成 batch=1
+            x = x.unsqueeze(0)  # [1, L]
+        elif x.dim() == 2:
+            pass  # already [B, L]
+        else:
+            raise ValueError(f"Unexpected input shape for make_frame: {x.shape}")
+
+        size = self.fs * self.second
+        step = int(self.time_step * self.fs)
+        window = int(self.time_window * self.fs)
+        frame_list = []
+        for i in range(0, size, step):
+            start_idx, end_idx = i, i + window
+            sample = x[..., start_idx:end_idx]  # [B, window]
             if sample.shape[-1] == window:
-                frame.append(sample)
-        frame = torch.stack(frame, dim=1)
+                frame_list.append(sample)
+        if len(frame_list) == 0:
+            raise RuntimeError(
+                f"No frames produced: size={size}, window={window}, step={step}"
+            )
+        frame = torch.stack(frame_list, dim=1)  # [B, num_frames, window]
         return frame
 
 
-class MaskedAutoEncoderViT(nn.Module):
-    def __init__(self, input_size: int, num_patches: int,
-                 encoder_embed_dim: int, encoder_heads: int, encoder_depths: int,
-                 decoder_embed_dim: int, decoder_heads: int, decoder_depths: int):
+class MaskedAutoEncoderViT(nn.Module):  # 基于vision transformer的自编码器
+    def __init__(
+        self,
+        input_size: int,
+        num_patches: int,
+        encoder_embed_dim: int,
+        encoder_heads: int,
+        encoder_depths: int,
+        decoder_embed_dim: int,
+        decoder_heads: int,
+        decoder_depths: int,
+    ):
         super().__init__()
-        self.patch_embed = nn.Linear(input_size, encoder_embed_dim) # 线性映射 维度 256->768
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, encoder_embed_dim))
-        self.embed_dim = encoder_embed_dim
-        self.encoder_depths = encoder_depths
-        self.mlp_ratio = 4.
+        # 这里的网络的输入为，特征提取网络（多尺度残差提取网络）的线性转换后的输出为256维
+        self.patch_embed = nn.Linear(
+            input_size, encoder_embed_dim
+        )  # 线性映射到编码器维度  256->768
+        self.cls_token = nn.Parameter(
+            torch.zeros(1, 1, encoder_embed_dim)
+        )  # 用于下游的分类任务CLS标记
 
-        self.input_size = (num_patches, encoder_embed_dim) # 73, 768
-        self.patch_size = (1, encoder_embed_dim) # 1, 768
-        self.grid_h = int(self.input_size[0] // self.patch_size[0])
-        self.grid_w = int(self.input_size[1] // self.patch_size[1])
-        self.num_patches = self.grid_h * self.grid_w
+        self.embed_dim = encoder_embed_dim  # 768
+        self.encoder_depths = encoder_depths
+        self.mlp_ratio = 4.0
+
+        self.input_size = (num_patches, encoder_embed_dim)  # 73, 768
+        self.patch_size = (1, encoder_embed_dim)  # 1, 768
+        self.grid_h = int(self.input_size[0] // self.patch_size[0])  # 73
+        self.grid_w = int(self.input_size[1] // self.patch_size[1])  # 768/768=1
+        self.num_patches = self.grid_h * self.grid_w  # ？？
 
         # MAE Encoder
-        self.pos_embed = nn.Parameter(torch.randn(1, self.num_patches + 1, encoder_embed_dim), requires_grad=False)
-        self.encoder_block = nn.ModuleList([
-            Block(encoder_embed_dim, encoder_heads, self.mlp_ratio, qkv_bias=True,
-                  norm_layer=partial(nn.LayerNorm, eps=1e-6))
-            for _ in range(encoder_depths)
-        ])
-        self.encoder_norm = nn.LayerNorm(encoder_embed_dim, eps=1e-6)
+        # 此处位置编码+1是因为cls——token 1, 74, 768
+        self.pos_embed = nn.Parameter(
+            torch.randn(1, self.num_patches + 1, encoder_embed_dim), requires_grad=False
+        )
+        self.encoder_block = nn.ModuleList(
+            [
+                Block(
+                    encoder_embed_dim,
+                    encoder_heads,
+                    self.mlp_ratio,
+                    qkv_bias=True,
+                    norm_layer=partial(nn.LayerNorm, eps=1e-6),
+                )
+                for _ in range(encoder_depths)
+            ]
+        )
+        self.encoder_norm = nn.LayerNorm(encoder_embed_dim, eps=1e-6)  # 采用layer norm
 
         # MAE Decoder
-        self.decoder_embed = nn.Linear(encoder_embed_dim, decoder_embed_dim, bias=True)
-        self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
-        self.decoder_pos_embed = nn.Parameter(torch.randn(1, self.num_patches, decoder_embed_dim), requires_grad=False)
-        self.decoder_block = nn.ModuleList([
-            Block(decoder_embed_dim, decoder_heads, self.mlp_ratio, qkv_bias=True,
-                  norm_layer=partial(nn.LayerNorm, eps=1e-6))
-            for _ in range(decoder_depths)
-        ])
+        self.decoder_embed = nn.Linear(
+            encoder_embed_dim, decoder_embed_dim, bias=True
+        )  # 编码映射解码，768->256
+        self.mask_token = nn.Parameter(
+            torch.zeros(1, 1, decoder_embed_dim)
+        )  # 掩码token
+        self.decoder_pos_embed = nn.Parameter(
+            torch.randn(1, self.num_patches, decoder_embed_dim), requires_grad=False
+        )
+        self.decoder_block = nn.ModuleList(
+            [
+                Block(
+                    decoder_embed_dim,
+                    decoder_heads,
+                    self.mlp_ratio,
+                    qkv_bias=True,
+                    norm_layer=partial(nn.LayerNorm, eps=1e-6),
+                )
+                for _ in range(decoder_depths)
+            ]
+        )
         self.decoder_norm = nn.LayerNorm(decoder_embed_dim, eps=1e-6)
-        self.decoder_pred = nn.Linear(decoder_embed_dim, input_size, bias=True)
+        self.decoder_pred = nn.Linear(
+            decoder_embed_dim, input_size, bias=True
+        )  # 256->256
         self.initialize_weights()
 
     def forward(self, x, mask_ratio=0.8):
@@ -173,9 +259,13 @@ class MaskedAutoEncoderViT(nn.Module):
         x = self.decoder_embed(x[:, 1:, :])
 
         # append mask tokens to sequence
-        mask_tokens = self.mask_token.repeat(x.shape[0], ids_restore.shape[1] - x.shape[1], 1)
+        mask_tokens = self.mask_token.repeat(
+            x.shape[0], ids_restore.shape[1] - x.shape[1], 1
+        )
         x_ = torch.cat([x, mask_tokens], dim=1)  # no cls token
-        x = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2]))  # unshuffle
+        x = torch.gather(
+            x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2])
+        )  # unshuffle
 
         # add pos embed
         x = x + self.decoder_pos_embed
@@ -198,7 +288,9 @@ class MaskedAutoEncoderViT(nn.Module):
         noise = torch.rand(n, l, device=x.device)  # noise in [0, 1]
 
         # sort noise for each sample
-        ids_shuffle = torch.argsort(noise, dim=1)  # ascend: small is keep, large is remove
+        ids_shuffle = torch.argsort(
+            noise, dim=1
+        )  # ascend: small is keep, large is remove
         ids_restore = torch.argsort(ids_shuffle, dim=1)
 
         # keep the first subset
@@ -214,19 +306,26 @@ class MaskedAutoEncoderViT(nn.Module):
 
     def initialize_weights(self):
         # initialization
-        # initialize (and freeze) pos_embed by sin-cos embedding
-        pos_embed = get_2d_sincos_pos_embed_flexible(self.pos_embed.shape[-1],
-                                                     (self.grid_h, self.grid_w),
-                                                     cls_token=True)
-        self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
-        decoder_pos_embed = get_2d_sincos_pos_embed_flexible(self.decoder_pos_embed.shape[-1],
-                                                             (self.grid_h, self.grid_w),
-                                                             cls_token=False)
-        self.decoder_pos_embed.data.copy_(torch.from_numpy(decoder_pos_embed).float().unsqueeze(0))
+        # initialize (and freeze) pos_embed by sin-cos embedding，采用正余弦位置编码
+        # pos_embed: 1，74, 768，grid_h = 1, grid_w = 73
+        pos_embed = get_2d_sincos_pos_embed_flexible(
+            self.pos_embed.shape[-1], (self.grid_h, self.grid_w), cls_token=True
+        )  # 74, 768
+        self.pos_embed.data.copy_(
+            torch.from_numpy(pos_embed).float().unsqueeze(0)
+        )  # 添加维度 74, 768-->1, 74, 768
+        decoder_pos_embed = get_2d_sincos_pos_embed_flexible(
+            self.decoder_pos_embed.shape[-1],
+            (self.grid_h, self.grid_w),
+            cls_token=False,
+        )
+        self.decoder_pos_embed.data.copy_(
+            torch.from_numpy(decoder_pos_embed).float().unsqueeze(0)
+        )
 
         # timm's trunc_normal_(std=.02) is effectively normal_(std=0.02) as cutoff is too big (2.)
-        torch.nn.init.normal_(self.cls_token, std=.02)
-        torch.nn.init.normal_(self.mask_token, std=.02)
+        torch.nn.init.normal_(self.cls_token, std=0.02)
+        torch.nn.init.normal_(self.mask_token, std=0.02)
 
         # initialize nn.Linear and nn.LayerNorm
         self.apply(self._init_weights)
@@ -244,25 +343,40 @@ class MaskedAutoEncoderViT(nn.Module):
 
 
 def frame_size(fs, second, time_window, time_step):
-    x = np.random.randn(1, fs * second) #x.shape = (1, 3000)
+    x = np.random.randn(1, fs * second)  # x.shape = (1, 3000)
     size = fs * second
-    step = int(time_step * fs) # 步长37
+    step = int(time_step * fs)  # 步长37
     window = int(time_window * fs)
-    frame = [] # 添加空列表
+    frame = []  # 添加空列表
     for i in range(0, size, step):
         start_idx, end_idx = i, i + window
-        sample = x[..., start_idx: end_idx] # 维度切片，省略号表示所有前面的维度全部保留、截取
-        if sample.shape[-1] == window: #sample.shape=(1,300) 判断最后一维的长度是否等于window
+        sample = x[
+            ..., start_idx:end_idx
+        ]  # 维度切片，省略号表示所有前面的维度全部保留、截取
+        if (
+            sample.shape[-1] == window
+        ):  # sample.shape=(1,300) 判断最后一维的长度是否等于window
             frame.append(sample)
-    frame = np.stack(frame, axis=1) # 对于步长为0.375s，frame.shape = (1, 73, 300)
+    frame = np.stack(frame, axis=1)  # 对于步长为0.375s，frame.shape = (1, 73, 300)
     print("frame.shape:", frame.shape)
     return frame.shape[1], frame.shape[2]
 
 
 class NeuroNetEncoderWrapper(nn.Module):
-    def __init__(self, fs: int, second: int, time_window: int, time_step: float,
-                 frame_backbone, patch_embed, encoder_block, encoder_norm, cls_token, pos_embed,
-                 final_length):
+    def __init__(
+        self,
+        fs: int,
+        second: int,
+        time_window: int,
+        time_step: float,
+        frame_backbone,
+        patch_embed,
+        encoder_block,
+        encoder_norm,
+        cls_token,
+        pos_embed,
+        final_length,
+    ):
 
         super().__init__()
         self.fs, self.second = fs, second
@@ -310,18 +424,27 @@ class NeuroNetEncoderWrapper(nn.Module):
         window = int(self.time_window * self.fs)
         frame = []
         for i in range(0, size, step):
-            start_idx, end_idx = i, i+window
-            sample = x[..., start_idx: end_idx]
+            start_idx, end_idx = i, i + window
+            sample = x[..., start_idx:end_idx]
             if sample.shape[-1] == window:
                 frame.append(sample)
         frame = torch.stack(frame, dim=1)
         return frame
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     x0 = torch.randn((50, 3000))
-    m0 = NeuroNet(fs=100, second=30, time_window=5, time_step=0.5,
-                  encoder_embed_dim=256, encoder_depths=6, encoder_heads=8,
-                  decoder_embed_dim=128, decoder_heads=4, decoder_depths=8,
-                  projection_hidden=[1024, 512])
+    m0 = NeuroNet(
+        fs=100,
+        second=30,
+        time_window=5,
+        time_step=0.5,
+        encoder_embed_dim=256,
+        encoder_depths=6,
+        encoder_heads=8,
+        decoder_embed_dim=128,
+        decoder_heads=4,
+        decoder_depths=8,
+        projection_hidden=[1024, 512],
+    )
     m0.forward(x0, mask_ratio=0.5)
