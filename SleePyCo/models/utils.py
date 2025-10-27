@@ -10,10 +10,30 @@ from torch.nn.modules import Module
 from torch.nn.modules.utils import _single, _pair, _triple
 
 
-class _ConvNd(Module):
+class _ConvNd(Module): # 定义通用卷积神经网络模块，所有卷积层的基类。
 
     def __init__(self, in_channels, out_channels, kernel_size, stride, padding,
                  dilation, transposed, output_padding, groups, bias, weight=None):
+        """
+        初始化_ConvNd类实例。
+
+        Args:
+        in_channels (int): 输入通道数。
+        out_channels (int): 输出通道数。
+        kernel_size (int 或 tuple): 卷积核的大小。
+        stride (int 或 tuple): 卷积步长。
+        padding (int 或 tuple): 输入的零填充大小。
+        dilation (int 或 tuple): 卷积核元素之间的间距。
+        transposed (bool): 是否进行转置卷积。
+        output_padding (int 或 tuple): 输出填充大小。
+        groups (int): 将输入和输出通道分为多少个组。
+        bias (bool): 是否添加偏置项。
+        weight (torch.Tensor, 可选): 卷积核权重，默认值为None。
+
+        Raises:
+        ValueError: 如果输入通道数或输出通道数不能被分组数整除。
+
+        """
         super(_ConvNd, self).__init__()
         if in_channels % groups != 0:
             raise ValueError('in_channels must be divisible by groups')
@@ -40,19 +60,19 @@ class _ConvNd(Module):
             self.register_parameter('bias', None)
         self.reset_parameters(weight)
 
-    def reset_parameters(self, weight):
-        if weight == None:
+    def reset_parameters(self, weight): # 参数初始化方法
+        if weight == None: # 如果没有提供权重参数，使用均匀分布初始化权重
             n = self.in_channels
             for k in self.kernel_size:
                 n *= k
-            stdv = 1. / math.sqrt(n)
+            stdv = 1. / math.sqrt(n) # 计算标准差根号n
             self.weight.data.uniform_(-stdv, stdv)
         else:
             self.weight.data = torch.FloatTensor(weight)
         if self.bias is not None:
-            self.bias.data.uniform_(-stdv, stdv)
+            self.bias.data.uniform_(-stdv, stdv) # 均匀分布初始化偏置
 
-    def __repr__(self):
+    def __repr__(self): # 打印对象方法，创建实例后，打印会调用该方法，比如 conv1d = Conv1d(...)，print(conv1d) 会调用这个方法
         s = ('{name}({in_channels}, {out_channels}, kernel_size={kernel_size}'
              ', stride={stride}')
         if self.padding != (0,) * len(self.padding):
@@ -73,8 +93,8 @@ class Conv1d(_ConvNd):
     
     def __init__(self, in_channels, out_channels, kernel_size, stride=1,
                  padding='VALID', dilation=1, groups=1, bias=True, weight=None):
-        kernel_size = _single(kernel_size)
-        stride = _single(stride)
+        kernel_size = _single(kernel_size)# 转为元组形式
+        stride = _single(stride) 
         dilation = _single(dilation)
         super(Conv1d, self).__init__(
             in_channels, out_channels, kernel_size, stride, padding, dilation,

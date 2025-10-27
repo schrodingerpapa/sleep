@@ -69,11 +69,11 @@ class DeepSleepNetFeature(nn.Module):
 
     def forward(self, x):
         out = []
-        x1 = self.path1(x)  # path 1
-        x2 = self.path2(x)  # path 2
+        x1 = self.path1(x)  # path 1 B,128,16
+        x2 = self.path2(x)  # path 2 B,128,8
         
-        x2 = torch.nn.functional.interpolate(x2, x1.size(2))
-        c5 = self.smooth(self.compress(torch.cat([x1, x2], dim=1)))
+        x2 = torch.nn.functional.interpolate(x2, x1.size(2)) #向上插值，B,128,16
+        c5 = self.smooth(self.compress(torch.cat([x1, x2], dim=1))) # B,128,16
 
         if self.training_mode == 'pretrain':
             out.append(c5)

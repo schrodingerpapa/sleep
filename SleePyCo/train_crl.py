@@ -64,15 +64,15 @@ class OneFoldTrainer:
         self.model.train()
         train_loss = 0
 
-        for i, (inputs, labels) in enumerate(self.loader_dict['train']):
+        for i, (inputs, labels) in enumerate(self.loader_dict['train']): # inputs为大小为2的list，包含两个增强后的样本，labels为标签
             loss = 0
-            labels = labels.view(-1).to(self.device)
+            labels = labels.view(-1).to(self.device) # B,
 
-            inputs = torch.cat([inputs[0], inputs[1]], dim=0).to(self.device)
-            outputs = self.model(inputs)[0]
+            inputs = torch.cat([inputs[0], inputs[1]], dim=0).to(self.device) # 2*B,1,3000
+            outputs = self.model(inputs)[0] # 2*B,proj_dim
 
-            f1, f2 = torch.split(outputs, [labels.size(0), labels.size(0)], dim=0)
-            features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)
+            f1, f2 = torch.split(outputs, [labels.size(0), labels.size(0)], dim=0) # f1:B,proj_dim   f2:B,proj_dim
+            features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1) # B,2,proj_dim
             loss += self.criterion(features, labels)
             
             self.optimizer.zero_grad()
@@ -197,6 +197,7 @@ def main():
     set_random_seed(args.seed, use_cuda=True)
 
     with open(args.config) as config_file:
+        
         config = json.load(config_file)
     config['name'] = os.path.basename(args.config).replace('.json', '')
     

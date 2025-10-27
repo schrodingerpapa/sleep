@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import json
 
 
 class SleePyCoBackbone(nn.Module): # 模型主干网络
@@ -66,7 +67,7 @@ class SleePyCoBackbone(nn.Module): # 模型主干网络
         out = []
         # 输入数据得到不同尺度的特征图
         c1 = self.init_layer(x)
-        c2 = self.layer1(c1)
+        c2 = self.layer1(c1) # B,64,3000
         c3 = self.layer2(c2)
         c4 = self.layer3(c3)
         c5 = self.layer4(c4)
@@ -170,3 +171,16 @@ def logsumexp_2d(tensor):
     s, _ = torch.max(tensor_flatten, dim=2, keepdim=True)
     outputs = s + (tensor_flatten - s).exp().sum(dim=2, keepdim=True).log()
     return outputs
+
+
+if __name__ == "__main__":
+    # 创建测试输入数据
+    x = torch.randn(1, 1, 3000)  # EEG [batch, channel, length]
+    json_path = r"/home/chenlungan/算法模型/SleePyCo/configs/SleePyCo-Transformer_SL-01_numScales-1_Sleep-EDF-2018_pretrain.json"
+    config = json.load(open(json_path, 'r'))
+    model = SleePyCoBackbone(config)
+    # 测试前向传播
+    with torch.no_grad():
+        output = model(x)
+        print(f"Input shape: {x.shape}")
+        print(f"Output shape: {output[0].shape}")  # 输出是一个列表，取第一个元素

@@ -81,8 +81,11 @@ class EEGDataLoader(Dataset):
         data_root = os.path.join(self.dataset_path, self.eeg_channel)
         data_fname_list = [os.path.basename(x) for x in sorted(glob.glob(os.path.join(data_root, '*.npz')))]
         data_fname_dict = {'train': [], 'test': [], 'val': []}
-        split_idx_list = np.load(os.path.join('./split_idx', 'idx_{}.npy'.format(self.dset_name)), allow_pickle=True)  # 读取划分数据集的索引
-
+        # 获取当前脚本所在目录的绝对路径
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        # 构建split_idx的绝对路径
+        split_idx_path = os.path.join(current_dir, 'split_idx', 'idx_{}.npy'.format(self.dset_name))
+        split_idx_list = np.load(split_idx_path, allow_pickle=True)
         assert len(split_idx_list) == self.num_splits
     
         if self.dset_name == 'Sleep-EDF-2013':

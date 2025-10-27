@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # 加载损失数据（包含字典的数组）
-losses = np.load('losses_fold-10.npy', allow_pickle=True).item()  # .item() 将数组转换为字典
+losses = np.load('losses_fold-02.npy', allow_pickle=True).item()  # .item() 将数组转换为字典
 
 # 提取训练损失和验证损失（直接通过键访问）
 train_losses = losses['train_losses']  # 训练损失数组
@@ -24,6 +24,6 @@ plt.grid(linestyle='--', alpha=0.7)
 plt.show()
 
 # # 保存图片
-plt.savefig('loss_curve_fold-10.png', dpi=300, bbox_inches='tight')
+plt.savefig('loss_curve_fold-02.png', dpi=300, bbox_inches='tight')
 print("损失曲线已保存为 loss_curve_fold-02.png（包含训练和验证损失）")
 print("训练时长为：", train_time)
