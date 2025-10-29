@@ -51,9 +51,11 @@ class OneFoldTrainer:
         model = MainModel(self.cfg)
         print('[INFO] Number of params of model: ', sum(p.numel() for p in model.parameters() if p.requires_grad))
         model = torch.nn.DataParallel(model, device_ids=list(range(len(self.args.gpu.split(",")))))
+        if self.cfg['classifier']['name'] != 'Transformer':
+            load_name = self.cfg['name'].replace(self.cfg['classifier']['name'],'Transformer')
         if self.tp_cfg['mode'] != 'scratch':
             print('[INFO] Model loaded for finetune')
-            load_name = self.cfg['name'].replace('SL-{:02d}'.format(self.ds_cfg['seq_len']), 'SL-01')
+            load_name = load_name.replace('SL-{:02d}'.format(self.ds_cfg['seq_len']), 'SL-01')
             load_name = load_name.replace('numScales-{}'.format(self.fp_cfg['num_scales']), 'numScales-1')
             load_name = load_name.replace(self.tp_cfg['mode'], 'pretrain')
             load_path = os.path.join('checkpoints', load_name, 'ckpt_fold-{0:02d}.pth'.format(self.fold))

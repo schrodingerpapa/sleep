@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from .utils import Conv1d
+from utils import Conv1d
 
 
 class ConvUnit(nn.Module):
