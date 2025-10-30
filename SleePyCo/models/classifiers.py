@@ -277,7 +277,7 @@ class Transformer(nn.Module):
             nhead=nheads,
             dim_feedforward=self.feedforward_dim,
             dropout=0.1 if self.cfg["dropout"] else 0.0,
-        )
+        )  # 标准的输入格式为 [seq_len, B, in_features_CH]——>[时间步，Batch，通道特征]
         self.transformer = nn.TransformerEncoder(
             self.transformer_layer, num_layers=num_encoder_layers
         )
@@ -295,9 +295,9 @@ class Transformer(nn.Module):
 
     def forward(self, x):
         x = x.transpose(0, 1)
-        x = self.pos_encoding(x)
+        x = self.pos_encoding(x)  # 这里位置编码的输入为， [seq_len, B, in_features_CH]
         x = self.transformer(x)
-        x = x.transpose(0, 1)
+        x = x.transpose(0, 1)  # 经过transfomer编码， [B, seq_len, model_dim]
 
         if self.pool == "mean":
             x = x.mean(dim=1)
@@ -325,7 +325,6 @@ class Transformer(nn.Module):
 class MambaClassifier(nn.Module):
     """
     基于 Mamba 模型的分类器
-    替代 TransformerEncoder 的结构
     """
 
     def __init__(self, config, num_layers=3, pool="mean"):
@@ -424,7 +423,7 @@ def get_classifier(config):
 
     elif classifier_name == "Mamba":
         classifier = MambaClassifier(
-            config, num_layers=3, pool=config["classifier"]["pool"]
+            config, num_layers=1, pool=config["classifier"]["pool"]
         )
 
     return classifier
