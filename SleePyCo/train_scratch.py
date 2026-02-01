@@ -68,12 +68,10 @@ class OneFoldTrainer:
         model = torch.nn.DataParallel(
             model, device_ids=list(range(len(self.args.gpu.split(","))))
         )
-        load_name = self.cfg["name"]
         if self.cfg["classifier"]["name"] != "Transformer":
             load_name = self.cfg["name"].replace(
                 self.cfg["classifier"]["name"], "Transformer"
             )
-
         if self.tp_cfg["mode"] != "scratch":
             print("[INFO] Model loaded for finetune")
             load_name = load_name.replace(
@@ -312,7 +310,7 @@ def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument("--seed", type=int, default=42, help="random seed")
-    parser.add_argument("--gpu", type=str, default="0,1,2,3,4,5,6,7", help="gpu id")
+    parser.add_argument("--gpu", type=str, default="1,2,3,4,5,6,7", help="gpu id")
     parser.add_argument("--config", type=str, help="config file path")
     args = parser.parse_args()
 

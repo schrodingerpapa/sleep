@@ -66,24 +66,24 @@ class SleePyCoBackbone(nn.Module): # 模型主干网络
     def forward(self, x): # x: [batch_size, channel, length],前向传播
         out = []
         # 输入数据得到不同尺度的特征图
-        c1 = self.init_layer(x)
-        c2 = self.layer1(c1) # B,64,3000
-        c3 = self.layer2(c2)
-        c4 = self.layer3(c3)
-        c5 = self.layer4(c4)
+        c1 = self.init_layer(x) # B,64,3000
+        c2 = self.layer1(c1) # B,128,600
+        c3 = self.layer2(c2) # B,192,120
+        c4 = self.layer3(c3) # B,256,24
+        c5 = self.layer4(c4) # B,256,5
 
         if self.training_mode == 'pretrain':
             out.append(c5) # 预训练只返回最后一层的特征图
         elif self.training_mode in ['scratch', 'fullyfinetune', 'freezefinetune']:
             # 根据训练模式返回不同尺度的特征图
-            p5 = self.conv_c5(c5)
+            p5 = self.conv_c5(c5) # B,128,5
             out.append(p5)
             if self.num_scales > 1:
-                p4 = self.conv_c4(c4)
+                p4 = self.conv_c4(c4) # B,128,24
                 out.append(p4)
             if self.num_scales > 2:
-                p3 = self.conv_c3(c3)
-                out.append(p3)
+                p3 = self.conv_c3(c3) # B,128,120
+                out.append(p3) # out = [p5, p4, p3],长度为3的列表
         
         return out
 
@@ -175,7 +175,7 @@ def logsumexp_2d(tensor):
 
 if __name__ == "__main__":
     # 创建测试输入数据
-    x = torch.randn(1, 1, 3000)  # EEG [batch, channel, length]
+    x = torch.randn(50, 1, 3000)  # EEG [batch, channel, length]
     json_path = r"/home/chenlungan/算法模型/SleePyCo/configs/SleePyCo-Transformer_SL-01_numScales-1_Sleep-EDF-2018_pretrain.json"
     config = json.load(open(json_path, 'r'))
     model = SleePyCoBackbone(config)

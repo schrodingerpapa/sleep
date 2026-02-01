@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -89,7 +90,7 @@ class MainModel(nn.Module):
 
     def forward(self, x):
         outputs = []
-        features = self.feature(x)
+        features = self.feature(x) # 长度为3的列表
         
         for feature in features:
             if self.bb_cfg['dropout']:
@@ -98,10 +99,21 @@ class MainModel(nn.Module):
             if self.training_mode == 'pretrain':
                 outputs.append(F.normalize(self.head(feature)))
             elif self.training_mode in ['scratch', 'fullfinetune', 'freezefinetune']:
-                feature = feature.transpose(1, 2)
+                feature = feature.transpose(1, 2) # 交换第一维度和第二维度，B,C,L -> B,L,C
                 output = self.classifier(feature)
-                outputs.append(output)    # (B, L, H)
+                outputs.append(output)    # (B, num_classes)
             else:
                 raise NotImplementedError
             
         return outputs
+
+if __name__ == "__main__":
+    x = torch.randn(64, 1, 3000)
+    config_path = '/home/chenlungan/算法模型/SleePyCo/configs/SleePyCo-Transformer_SL-10_numScales-3_Sleep-EDF-2018_freezefinetune.json'
+    import json
+    config = json.load(open(config_path, 'r'))
+    model = MainModel(config)
+    out = model(x)
+
+
+

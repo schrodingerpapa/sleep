@@ -1,0 +1,133 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# PyTorch checkpoints and models
+*.pth
+*.pt
+*.pkl
+*.joblib
+
+# Data files (通常很大，不应该提交到Git)
+*.npz
+*.npy
+*.h5
+*.hdf5
+*.mat
+*.csv
+*.tsv
+*.json
+*.pkl
+
+# 特定的大型数据文件（根据您的项目结构）
+eeg_data_processe*.npz
+private_pred.csv
+processed_eeg_dat*.csv
+scaler.pkl
+sleep_rf_model.pkl
+
+# Dataset folders (数据文件夹)
+data/
+dataset/
+datasets/
+raw_data/
+processed_data/
+
+# Logs and outputs
+logs/
+output/
+results/
+checkpoints/
+runs/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Python packaging and distribution
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# PyCharm
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/dictionaries
+.idea/vcs.xml
+.idea/jsLibraryMappings.xml
+.idea/dataSources.ids
+.idea/dataSources.xml
+.idea/sqlDataSources.xml
+.idea/dynamic.xml
+.idea/uiDesigner.xml
+
+# VS Code
+.vscode/settings.json
+.vscode/launch.json
+.vscode/tasks.json
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+
+# Large files (一般超过100MB)
+*.zip
+*.tar.gz
+*.tgz
+*.rar
+
+# 特定于深度学习项目的忽略
+*.onnx
+*.tflite
+*.engine
+*.plan

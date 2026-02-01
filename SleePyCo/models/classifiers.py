@@ -2,6 +2,8 @@ import math
 import torch
 import torch.nn as nn
 from mamba_ssm import Mamba
+from models.tAPE_PositionalEncoding import eRPE_Transformer
+
 
 feature_len_dict = {
     "SleePyCo": [
@@ -48,7 +50,7 @@ class PlainRNN(nn.Module):
         super(PlainRNN, self).__init__()
         self.cfg = config["classifier"]
         self.num_classes = self.cfg["num_classes"]
-        self.input_dim = self.cfg["comp_chn"]
+        self.input_dim = self.cfg["input_dim"]
         self.hidden_dim = self.cfg["hidden_dim"]
         self.num_layers = self.cfg["num_rnn_layers"]
         self.bidirectional = self.cfg["bidirectional"]
@@ -226,13 +228,10 @@ class PositionalEncoding(nn.Module):
 
         pe = torch.zeros(self.max_len, out_features)
         position = torch.arange(0, self.max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(
-            torch.arange(0, out_features, 2).float()
-            * (-math.log(10000.0) / out_features)
-        )
+        div_term = torch.exp( torch.arange(0, out_features, 2).float()* (-math.log(10000.0) / out_features)) # 对数指数变换，避免直接大数幂次，提升数值稳定性
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0).transpose(0, 1)
+        pe = pe.unsqueeze(0).transpose(0, 1) # unsqueeze(0) → (1, max_len, out_features)；transpose(0,1) → (max_len, 1, out_features)
         self.register_buffer("pe", pe)
 
     def forward(self, x):
@@ -240,14 +239,14 @@ class PositionalEncoding(nn.Module):
 
         if self.num_scales > 1:
             hop = self.max_len // x.size(0)
-            pe = self.pe[hop // 2 :: hop, :]
+            pe = self.pe[hop // 2 :: hop, :] # 均匀采样pos
         else:
             pe = self.pe
 
         if pe.shape[0] != x.size(0):
             pe = pe[: x.size(0), :]
 
-        x = x + pe
+        x = x + pe # pe自动广播到x的shape
 
         if self.cfg["dropout"]:
             x = self.dropout(x)
@@ -297,17 +296,19 @@ class Transformer(nn.Module):
         x = x.transpose(0, 1)
         x = self.pos_encoding(x)  # 这里位置编码的输入为， [seq_len, B, in_features_CH]
         x = self.transformer(x)
-        x = x.transpose(0, 1)  # 经过transfomer编码， [B, seq_len, model_dim]
+        x = x.transpose(0, 1)  # 经过transfomer编码， [B, seq_len, in_features_CH]
 
         if self.pool == "mean":
-            x = x.mean(dim=1)
+            x = x.mean(dim=1)  # 输入 (B, L, C) → 输出 (B, C)
         elif self.pool == "last":
-            x = x[:, -1]
+            x = x[:, -1]  # 输入 (B, L, C) → 输出 (B, C)
         elif self.pool == "attn":
-            a_states = torch.tanh(self.w_ha(x))
+            a_states = torch.tanh(
+                self.w_ha(x)
+            )  # (B, L, C) → (B, L, C)（线性变换+激活）
             alpha = torch.softmax(self.w_at(a_states), dim=1).view(
                 x.size(0), 1, x.size(1)
-            )
+            )  # (B, 1, L)
             x = torch.bmm(alpha, a_states).view(x.size(0), -1)
         elif self.pool == None:
             x = x
@@ -418,6 +419,10 @@ def get_classifier(config):
 
     elif classifier_name == "Transformer":
         classifier = Transformer(
+            config, nheads=8, num_encoder_layers=6, pool=config["classifier"]["pool"]
+        )
+    elif classifier_name == "eRPETransformer":
+        classifier = eRPE_Transformer(
             config, nheads=8, num_encoder_layers=6, pool=config["classifier"]["pool"]
         )
 

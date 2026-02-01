@@ -5,29 +5,29 @@ from scipy import signal
 from scipy.ndimage.interpolation import shift
 
 
-class TwoTransform: # 数据加强
+class TwoTransform:
     
     def __init__(self, transform):
-        self.transform = transform  # 接收一个变换函数
+        self.transform = transform
 
     def __call__(self, x):
-        return [self.transform(x), self.transform(x)]  # 返回两个增强后的数据
+        return [self.transform(x), self.transform(x)]
 
 
 class Compose:
 
     def __init__(self, transforms, mode='full'):
-        self.transforms = transforms # 接收一个变换函数列表
-        self.mode = mode # 接收一个模式参数
+        self.transforms = transforms
+        self.mode = mode
 
     def __call__(self, x):
-        if self.mode == 'random':  # 随机选择一种变换对数据进行加强
+        if self.mode == 'random':
             index = random.randint(0, len(self.transforms) - 1)
             x = self.transforms[index](x)
-        elif self.mode == 'full':  # 对输入数据应用所有变换(按照顺序)
+        elif self.mode == 'full':
             for t in self.transforms:
                 x = t(x)
-        elif self.mode == 'shuffle':  # 随机打乱变换的顺序并全部应用
+        elif self.mode == 'shuffle':
             transforms = np.random.choice(self.transforms, len(self.transforms), replace=False)
             for t in transforms:
                 x = t(x)
@@ -44,7 +44,7 @@ class Compose:
         return format_string
 
 
-class RandomAmplitudeScale:  # 随机幅度缩放
+class RandomAmplitudeScale:
 
     def __init__(self, range=(0.5, 2.0), p=0.5):
         self.range = range
@@ -60,7 +60,7 @@ class RandomAmplitudeScale:  # 随机幅度缩放
         return self.__class__.__name__ + '()'
 
 
-class RandomDCShift:  # 随机直流偏移
+class RandomDCShift:
     
     def __init__(self, range=(-10.0, 10.0), p=0.5):
         self.range = range
@@ -76,7 +76,7 @@ class RandomDCShift:  # 随机直流偏移
         return self.__class__.__name__ + '()'
 
 
-class RandomTimeShift:  # 随机时间偏移
+class RandomTimeShift:
 
     def __init__(self, range=(-300, 300), mode='constant', cval=0.0, p=0.5):
         self.range = range
