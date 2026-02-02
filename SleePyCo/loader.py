@@ -56,12 +56,12 @@ class EEGDataLoader(Dataset):
 
         if self.set == "train":
             if self.training_mode == "pretrain":  # 预训练模式
-                assert seq_len == 1
+                assert seq_len == 1 
                 input_a, input_b = self.two_transform(inputs)  # 增强视图
                 input_a = torch.from_numpy(input_a).float()
                 input_b = torch.from_numpy(input_b).float()
                 inputs = [input_a, input_b]
-            elif self.training_mode in ["scratch", "fullyfinetune", "freezefinetune"]:
+            elif self.training_mode in ["scratch", "fullyfinetune", "freezefinetune","FreRA"]:
                 inputs = inputs.reshape(1, n_sample)
                 inputs = torch.from_numpy(inputs).float()
             else:
@@ -125,6 +125,13 @@ class EEGDataLoader(Dataset):
                 if subject_idx in split_idx_list[self.fold - 1][self.set]:
                     data_fname_dict[self.set].append(data_fname_list[i])
 
+        elif self.dset_name == "AnphySleep" or self.dset_name == "Anphy_sleep":
+            # AnphySleep 数据集的加载处理
+            assert (
+                len(split_table) == self.num_splits and 1 <= self.fold <= 10
+            ), f"fold必须在1~10之间，当前为{self.fold}"
+            data_fname_dict[self.set] = split_table[self.fold - 1]["subjects"][self.set]
+
         elif (
             self.dset_name == "MASS"
             or self.dset_name == "Physio2018"
@@ -134,12 +141,6 @@ class EEGDataLoader(Dataset):
                 if i in split_idx_list[self.fold - 1][self.set]:
                     data_fname_dict[self.set].append(data_fname_list[i])
                     
-        elif self.dset_name == "AnphySleep" or self.dset_name == "Anphy_sleep":
-            # AnphySleep 数据集的加载处理
-            assert (
-                len(split_table) == self.num_splits and 1 <= self.fold <= 10
-            ), f"fold必须在1~10之间，当前为{self.fold}"
-            data_fname_dict[self.set] = split_table[self.fold - 1]["subjects"][self.set]
         else:
             raise NameError("dataset '{}' cannot be found.".format(self.dataset))
 

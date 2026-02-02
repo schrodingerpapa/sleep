@@ -72,7 +72,7 @@ class SleePyCoBackbone(nn.Module): # 模型主干网络
         c4 = self.layer3(c3) # B,256,24
         c5 = self.layer4(c4) # B,256,5
 
-        if self.training_mode == 'pretrain':
+        if self.training_mode == 'pretrain'or self.training_mode == 'FreRA':
             out.append(c5) # 预训练只返回最后一层的特征图
         elif self.training_mode in ['scratch', 'fullyfinetune', 'freezefinetune']:
             # 根据训练模式返回不同尺度的特征图

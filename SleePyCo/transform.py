@@ -1,4 +1,5 @@
 import torch
+from torch.nn import Module, Parameter
 import random
 import numpy as np
 from scipy import signal
@@ -31,6 +32,9 @@ class Compose:
             transforms = np.random.choice(self.transforms, len(self.transforms), replace=False)
             for t in transforms:
                 x = t(x)
+        elif self.mode == 'FreRA':
+            transforms = FreRA(len_sw=x.shape[1])
+            x = transforms(x)
         else:
             raise NotImplementedError
         return x
