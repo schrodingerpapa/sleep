@@ -33,7 +33,7 @@ class EEGDataLoader(Dataset):
         )  # 数据集路径
         self.inputs, self.labels, self.epochs = self.split_dataset()  # 划分数据集
 
-        if self.training_mode == 'pretrain':
+        if self.training_mode == 'pretrain' or self.training_mode == "mix_FreRA":
             self.transform = Compose(
                 transforms=[
                     RandomAmplitudeScale(),
@@ -60,6 +60,12 @@ class EEGDataLoader(Dataset):
                 input_a, input_b = self.two_transform(inputs)  # 增强视图
                 input_a = torch.from_numpy(input_a).float()
                 input_b = torch.from_numpy(input_b).float()
+                inputs = [input_a, input_b]
+            elif self.training_mode == "mix_FreRA":  # 混合预训练模式
+                assert seq_len == 1
+                _, input_b = self.two_transform(inputs)  # 增强视图
+                input_a = torch.from_numpy(inputs).float() #原视图
+                input_b = torch.from_numpy(input_b).float()  # 时域增强视图
                 inputs = [input_a, input_b]
             elif self.training_mode in ["scratch", "fullyfinetune", "freezefinetune","FreRA"]:
                 inputs = inputs.reshape(1, n_sample)
