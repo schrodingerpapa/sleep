@@ -5,7 +5,7 @@
         "num_splits": 10,
         "seq_len": 10,
         "target_idx": -1,
-        "root_dir": "/home/chenlungan/公开数据集/"
+        "root_dir": "/document/chenlungan/datasets/"
     },
 
     "backbone": {
