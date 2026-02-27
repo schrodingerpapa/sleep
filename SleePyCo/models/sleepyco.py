@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import json
+from .CABM import  CBAM1D
 
 
 class SleePyCoBackbone(nn.Module): # 模型主干网络
@@ -57,7 +58,7 @@ class SleePyCoBackbone(nn.Module): # 模型主干网络
             conv1d = nn.Conv1d(in_channels, out_channels, kernel_size=3, padding=1)
             layers += [conv1d, nn.BatchNorm1d(out_channels)]
             if i == n_layers - 1:
-                layers += [ChannelGate(in_channels)]
+                layers += [ChannelGate(out_channels)]
             layers += [nn.PReLU()]
             in_channels = out_channels
 
@@ -72,7 +73,7 @@ class SleePyCoBackbone(nn.Module): # 模型主干网络
         c4 = self.layer3(c3) # B,256,24
         c5 = self.layer4(c4) # B,256,5
 
-        if self.training_mode == 'pretrain'or self.training_mode == 'FreRA':
+        if self.training_mode == 'pretrain'or self.training_mode == 'FreRA' or self.training_mode == 'mix_FreRA':
             out.append(c5) # 预训练只返回最后一层的特征图
         elif self.training_mode in ['scratch', 'fullyfinetune', 'freezefinetune']:
             # 根据训练模式返回不同尺度的特征图
