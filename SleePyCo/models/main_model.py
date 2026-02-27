@@ -50,7 +50,7 @@ class MainModel(nn.Module):
         if self.bb_cfg['dropout']:
             self.dropout = nn.Dropout(p=0.5)
 
-        if self.training_mode == 'pretrain' or self.training_mode == 'FreRA':
+        if self.training_mode == 'pretrain' or self.training_mode == 'FreRA' or self.training_mode == 'mix_FreRA':
             proj_dim = self.cfg['proj_head']['dim']
             if config['proj_head']['name'] == 'Linear':
                 self.head = nn.Sequential(
@@ -96,7 +96,7 @@ class MainModel(nn.Module):
             if self.bb_cfg['dropout']:
                 feature = self.dropout(feature)
                 
-            if self.training_mode == 'pretrain' or self.training_mode == 'FreRA':
+            if self.training_mode == 'pretrain' or self.training_mode == 'FreRA' or self.training_mode == 'mix_FreRA':
                 outputs.append(F.normalize(self.head(feature)))
             elif self.training_mode in ['scratch', 'fullfinetune', 'freezefinetune']:
                 feature = feature.transpose(1, 2) # 交换第一维度和第二维度，B,C,L -> B,L,C
