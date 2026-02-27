@@ -8,15 +8,11 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 import torch.multiprocessing as mp
 
-
 from utils import *
 from loss import SupConLoss
 from loader import EEGDataLoader
 from models.main_model import MainModel
 from models.utils import Conv1d
-
-
-from models.FreRA import FreRA
 
 # train_crl用于预训练对比学习模型
 
@@ -29,7 +25,6 @@ class OneFoldTrainer:
         self.cfg = config
         self.tp_cfg = config["training_params"]
         self.es_cfg = self.tp_cfg["early_stopping"]
-        self.training_mode = config['training_params']['mode']
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print("[INFO] Config name: {}".format(config["name"]))
@@ -37,7 +32,6 @@ class OneFoldTrainer:
         self.train_iter = 0
         self.model = self.build_model()
         self.loader_dict = self.build_dataloader()
-        self.frera = FreRA(len_sw=3000)
 
         self.criterion = SupConLoss(temperature=self.tp_cfg["temperature"])
         self.optimizer = optim.Adam(
@@ -97,28 +91,21 @@ class OneFoldTrainer:
 
     def train_one_epoch(self):
         self.model.train()
+        self.optimizer.zero_grad()
         train_loss = 0
 
-        for i, (inputs, labels) in enumerate(self.loader_dict["train"]):  # inputs为大小为2的list,列表元素为<class 'numpy.ndarray'>，包含两个增强后的样本，labels为标签
+        for i, (inputs, labels) in enumerate(self.loader_dict["train"]):  # inputs为大小为2的list，包含两个增强后的样本，labels为标签
             loss = 0
             labels = labels.view(-1).to(self.device)  # B,
-            # 修改兼容FRERA模式
-            if self.training_mode == 'FreRA':
-                x = inputs  # 取第一个增强后的样本
-                y = self.frera(x)  # 使用FreRA增强输入数据
-                inputs = torch.cat([x, y], dim=0)  # 将原始输入和增强后的输入拼接在一起，形成新的输入批次
-            elif self.training_mode == 'mix_FreRA':
-                x , x_aug = inputs[0], inputs[1] # 拆分输入批次为原始输入和增强后的输入
-                x_faug = self.frera(x)  # 使用FreRA增强输入数据
-                inputs = torch.cat([x_aug, x_faug], dim=0)  # 拼接时域增强和频域增强           
-            inputs = inputs.to(self.device)  # 2B,1,3000
+
+            inputs = inputs.to(self.device)  # B,1,3000 
             outputs = self.model(inputs)[0]  # 2*B,proj_dim
 
             f1, f2 = torch.split(outputs, [labels.size(0), labels.size(0)], dim=0)  # f1:B,proj_dim   f2:B,proj_dim
             features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)  # B,2,proj_dim
             loss += self.criterion(features, labels)
 
-            self.optimizer.zero_grad()
+            
             loss.backward()
             self.optimizer.step()
 
@@ -244,7 +231,7 @@ def main():
     )
     parser.add_argument("--seed", type=int, default=42, help="random seed")
     parser.add_argument("--gpu", type=str, default="0,1,2,3,4,5,6,7", help="gpu id")
-    parser.add_argument("--config", type=str, help="config file path",default="/home/chenlungan/算法模型/SleePyCo/configs/mix_aug_FreRA_transform/SleePyCo-AttentionGRU-SL-01_numScales-1_Sleep-EDF-2018_pretrain_mix_FreRA_CABM.json")
+    parser.add_argument("--config", type=str, default="/home/chenlungan/算法模型/SleePyCo/configs/MAE/SleePyCo-Transformer_SL-01_numScales-1_Sleep-EDF-2018_pretrainMAE.json",help="config file path")
     args = parser.parse_args()
 
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"

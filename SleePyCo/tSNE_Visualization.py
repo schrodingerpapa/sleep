@@ -93,7 +93,7 @@ extracted_features = extract_features(model, rawData, device, batch_size=32)
 print(f"Extracted features shape: {extracted_features.shape}")  # 应为 (N, 256)
 
 # ----------------------------
-# 5. t-SNE 可视化
+# t-SNE 可视化
 # ----------------------------
 # 标准化（强烈推荐）
 scaler = StandardScaler()
@@ -127,6 +127,6 @@ legend_elements = [
 plt.legend(handles=legend_elements, loc='upper right', frameon=True, fancybox=True, shadow=True)
 
 plt.tight_layout()
-plt.show()
+plt.savefig("tSNE_Pretrained_SleePyCo.png")
 
 

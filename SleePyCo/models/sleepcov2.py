@@ -2,13 +2,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import json
-from .CABM import  CBAM1D
+# from .CABM import  CBAM1D
 
 
-class SleePyCoBackbone(nn.Module): # 模型主干网络
+class SleePyCoBackboneV2(nn.Module): # 模型主干网络
     
     def __init__(self, config):
-        super(SleePyCoBackbone, self).__init__()
+        super(SleePyCoBackboneV2, self).__init__()
 
         self.training_mode = config['training_params']['mode']
 
@@ -37,32 +37,73 @@ class SleePyCoBackbone(nn.Module): # 模型主干网络
         if config['backbone']['init_weights']:
             self._initialize_weights()
 
-    def _initialize_weights(self): # 初始化权重参数
+    # def _initialize_weights(self): # 初始化权重参数
+    #     for m in self.modules():
+    #         if isinstance(m, nn.Conv1d):
+    #             # kaiming初始化方法
+    #             nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu')
+    #             if m.bias is not None:
+    #                 nn.init.constant_(m.bias, 0)
+    #         elif isinstance(m, nn.BatchNorm1d):
+    #             nn.init.constant_(m.weight, 1)
+    #             nn.init.constant_(m.bias, 0)
+    def _initialize_weights(self): # 适配残差+PReLU的初始化（兼容所有PyTorch版本）
         for m in self.modules():
             if isinstance(m, nn.Conv1d):
-                # kaiming初始化方法
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                # 核心修正：移除negative_slope，手动适配PReLU的负斜率
+                # kaiming_normal_的默认nonlinearity='leaky_relu'时，negative_slope默认是0.01，我们手动缩放权重
+                nn.init.kaiming_normal_(
+                    m.weight, 
+                    mode='fan_out', 
+                    nonlinearity='leaky_relu'  # 保留leaky_relu，适配PReLU
+                )
+                # 手动缩放权重，等价于negative_slope=0.2的效果
+                # 公式：scale = sqrt(2 / (1 + a²)) / sqrt(2 / (1 + 0.01²)) ≈ sqrt(2/(1+0.04)) / sqrt(2/1.0001) ≈ 0.98
+                m.weight.data *= 0.98  # 适配PReLU默认负斜率0.2
+                
+                # 对残差层的卷积权重额外缩放，避免数值爆炸
+                if hasattr(m, 'use_residual') and m.use_residual:
+                    m.weight.data *= 0.1
+                
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.BatchNorm1d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
+            # 残差缩放系数初始化（如果有）
+            elif isinstance(m, nn.Parameter) and 'res_scale' in m.name:
+                nn.init.constant_(m, 0.1)
 
+    
 
     def make_layers(self, in_channels, out_channels, n_layers, maxpool_size, first=False):
-        # 构建卷积层
         layers = []
-        layers = layers + [MaxPool1d(maxpool_size)] if not first else layers
-
+        # 添加maxpool（非第一层）
+        if not first:
+            layers.append(MaxPool1d(maxpool_size))
+        
+        current_in = in_channels
         for i in range(n_layers):
-            conv1d = nn.Conv1d(in_channels, out_channels, kernel_size=3, padding=1)
-            layers += [conv1d, nn.BatchNorm1d(out_channels)]
-            if i == n_layers - 1:
-                layers += [ChannelGate(out_channels)]
-            layers += [nn.PReLU()]
-            in_channels = out_channels
+            # 判断当前卷积层是否满足残差条件：输入输出通道相同
+            use_residual = (current_in == out_channels)
+            
+            # 构建基础卷积组件
+            conv1d = nn.Conv1d(current_in, out_channels, kernel_size=3, padding=1)
+            bn = nn.BatchNorm1d(out_channels)
+            prelu = nn.PReLU()
 
+            # 最后一层需要加ChannelGate
+            if i == n_layers - 1:
+                gate = ChannelGate(out_channels)
+                conv_block = ConvLayerWithGate(conv1d, bn, gate, prelu, use_residual)
+            else:
+                conv_block = ConvLayerWithRes(conv1d, bn, prelu, use_residual)
+            
+            layers.append(conv_block)
+            current_in = out_channels
+        
         return nn.Sequential(*layers)
+
 
     def forward(self, x): # x: [batch_size, channel, length],前向传播
         out = []
@@ -151,7 +192,7 @@ class ChannelGate(nn.Module):
                 max_pool = F.max_pool1d(x, x.size(2), stride=x.size(2))
                 channel_att_raw = self.mlp( max_pool )
             elif pool_type=='lp':
-                lp_pool = F.lp_pool2d( x, 2, (x.size(2), x.size(3)), stride=(x.size(2), x.size(3)))
+                lp_pool = F.lp_pool1d( x, 2, x.size(2), stride=x.size(2))
                 channel_att_raw = self.mlp( lp_pool )
             elif pool_type=='lse':
                 # LSE pool only
@@ -166,6 +207,61 @@ class ChannelGate(nn.Module):
         scale = F.sigmoid(channel_att_sum).unsqueeze(2).expand_as(x)
         return x * scale
 
+class ResBlock(nn.Module):
+    def __init__(self, conv_layers, use_residual):
+        super().__init__()
+        self.conv_layers = nn.Sequential(*conv_layers)
+        self.use_residual = use_residual
+
+    def forward(self, x):
+        out = self.conv_layers(x)
+        if self.use_residual:
+            out = out + x
+        return out
+
+class ConvLayerWithRes(nn.Module):
+    def __init__(self, conv, bn, activation, use_residual):
+        super().__init__()
+        self.conv = conv
+        self.bn = bn
+        self.activation = activation
+        self.use_residual = use_residual  # 仅通道相同时为True
+
+    def forward(self, x):
+        residual = x  # 恒等映射，无参数
+        out = self.conv(x)
+        out = self.bn(out)
+        
+        # 仅当通道相同时，执行残差相加
+        if self.use_residual:
+            out = out + residual
+        
+        out = self.activation(out)
+        return out
+    
+# 新增：带ChannelGate的卷积层封装（最后一层专用）
+class ConvLayerWithGate(nn.Module):
+    def __init__(self, conv, bn, gate, activation, use_residual):
+        super().__init__()
+        self.conv = conv
+        self.bn = bn
+        self.gate = gate
+        self.activation = activation
+        self.use_residual = use_residual
+
+    def forward(self, x):
+        residual = x
+        out = self.conv(x)
+        out = self.bn(out)
+        out = self.gate(out)  # 通道注意力
+        
+        if self.use_residual:
+            out = out + residual
+        
+        out = self.activation(out)
+        return out
+
+
 
 def logsumexp_2d(tensor):
     tensor_flatten = tensor.view(tensor.size(0), tensor.size(1), -1)
@@ -179,7 +275,7 @@ if __name__ == "__main__":
     x = torch.randn(50, 1, 3000)  # EEG [batch, channel, length]
     json_path = r"/home/chenlungan/算法模型/SleePyCo/configs/SleePyCo-Transformer_SL-01_numScales-1_Sleep-EDF-2018_pretrain.json"
     config = json.load(open(json_path, 'r'))
-    model = SleePyCoBackbone(config)
+    model = SleePyCoBackboneV2(config)
     # 测试前向传播
     with torch.no_grad():
         output = model(x)

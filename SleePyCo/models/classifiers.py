@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 from mamba_ssm import Mamba
 from models.tAPE_PositionalEncoding import eRPE_Transformer
+from models.CotarFormer import CotarFormer
 
 
 feature_len_dict = {
@@ -254,6 +255,27 @@ class PositionalEncoding(nn.Module):
         return x
 
 
+class PositionalEmbedding(nn.Module):
+    def __init__(self, d_model, max_len=5000):
+        super(PositionalEmbedding, self).__init__()
+        # Compute the positional encodings once in log space.
+        pe = torch.zeros(max_len, d_model).float()
+        pe.require_grad = True
+
+        position = torch.arange(0, max_len).float().unsqueeze(1)
+        div_term = (
+            torch.arange(0, d_model, 2).float() * -(math.log(10000.0) / d_model)
+        ).exp()
+
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+
+        pe = pe.unsqueeze(0)
+        self.register_buffer("pe", pe)
+
+    def forward(self, x):
+        return self.pe[:, : x.size(1)]
+
 class Transformer(nn.Module):
 
     def __init__(self, config, nheads, num_encoder_layers, pool="mean"):
@@ -321,6 +343,49 @@ class Transformer(nn.Module):
         out = self.fc(x)
 
         return out
+
+class CotarFormerClassifier(nn.Module):
+    def __init__(self, config):
+        super(CotarFormerClassifier, self).__init__()
+        self.cfg = config["classifier"]
+        self.model_dim = self.cfg["model_dim"]
+        self.positional_encoding = PositionalEmbedding(self.model_dim)
+        self.transformer = CotarFormer(config)
+        self.pool = self.cfg["pool"]
+        self.fc = nn.Linear(self.model_dim, self.cfg["num_classes"])
+
+        if self.pool == "attn":
+            self.w_ha = nn.Linear(self.model_dim, self.model_dim, bias=True)
+            self.w_at = nn.Linear(self.model_dim, 1, bias=False)
+
+    def forward(self, x):
+        x = x + self.positional_encoding(x)
+        x = self.transformer(x)
+
+        if self.pool == "mean":
+            x = x.mean(dim=1)  # 输入 (B, L, C) → 输出 (B, C)
+        elif self.pool == "last":
+            x = x[:, -1]  # 输入 (B, L, C) → 输出 (B, C)
+        elif self.pool == "attn":
+            a_states = torch.tanh(
+                self.w_ha(x)
+            )  # (B, L, C) → (B, L, C)（线性变换+激活）
+            alpha = torch.softmax(self.w_at(a_states), dim=1).view(
+                x.size(0), 1, x.size(1)
+            )  # (B, 1, L)
+            x = torch.bmm(alpha, a_states).view(x.size(0), -1)
+        elif self.pool == None:
+            x = x
+        else:
+            raise NotImplementedError
+
+        if self.cfg["dropout"]:
+            x = self.dropout(x)
+
+        out = self.fc(x)
+        return out
+
+
 
 
 class MambaClassifier(nn.Module):
@@ -430,5 +495,7 @@ def get_classifier(config):
         classifier = MambaClassifier(
             config, num_layers=1, pool=config["classifier"]["pool"]
         )
+    elif classifier_name == "CotarFormer":
+        classifier = CotarFormerClassifier(config)
 
     return classifier

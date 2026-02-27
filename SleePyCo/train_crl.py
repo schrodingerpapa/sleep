@@ -230,7 +230,7 @@ def main():
     )
     parser.add_argument("--seed", type=int, default=42, help="random seed")
     parser.add_argument("--gpu", type=str, default="0,1,2,3,4,5,6,7", help="gpu id")
-    parser.add_argument("--config", type=str, help="config file path")
+    parser.add_argument("--config", type=str, default="/home/chenlungan/算法模型/SleePyCo/configs/SleePyCo-Transformer_SL-01_numScales-1_Sleep-EDF-2018_pretrain.json",help="config file path")
     args = parser.parse_args()
 
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"

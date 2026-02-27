@@ -3,17 +3,24 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .sleepyco import SleePyCoBackbone
+from .sleepcov2 import SleePyCoBackboneV2
+from .sleepcov3 import SleePyCoBackboneV3
+from .sleepycolight import SleePyCoLightBackbone
 from .xsleepnet import XSleepNetFeature
 from .iitnet import IITNetBackbone
 from .utime import UTimeEncoder
 from .deepsleepnet import DeepSleepNetFeature
 from .tinysleepnet import TinySleepNetFeature
+from .CotarFormer import CotarFormer
 
 from .classifiers import get_classifier
 
 
 last_chn_dict = {
     'SleePyCo': 256,
+    'SleePyCoV2': 256,
+    'SleePyCoV3': 256,
+    'SleePyCoLight': 128,
     'XSleepNet': 256,
     'IITNet': 128,
     'UTime': 256,
@@ -34,6 +41,14 @@ class MainModel(nn.Module):
 
         if self.bb_cfg['name'] == 'SleePyCo':
             self.feature = SleePyCoBackbone(self.cfg)
+        elif self.bb_cfg['name'] == 'SleePyCoV2':
+            self.feature = SleePyCoBackboneV2(self.cfg)
+        elif self.bb_cfg['name'] == 'SleePyCoV3':
+            self.feature = SleePyCoBackboneV3(self.cfg)
+        elif self.bb_cfg['name'] == 'SleePyCoLight':
+            self.feature = SleePyCoLightBackbone(self.cfg)
+        elif self.bb_cfg['name'] == 'CotarFormer':
+                self.feature = CotarFormer(self.cfg)
         elif self.bb_cfg['name'] == 'XSleepNet':
             self.feature = XSleepNetFeature(self.cfg)
         elif self.bb_cfg['name'] == 'UTime':
@@ -50,7 +65,7 @@ class MainModel(nn.Module):
         if self.bb_cfg['dropout']:
             self.dropout = nn.Dropout(p=0.5)
 
-        if self.training_mode == 'pretrain' or self.training_mode == 'FreRA' or self.training_mode == 'mix_FreRA':
+        if self.training_mode == 'pretrain' or self.training_mode == 'FreRA' or self.training_mode == 'mix_FreRA'or self.training_mode == 'pretrainMAE':
             proj_dim = self.cfg['proj_head']['dim']
             if config['proj_head']['name'] == 'Linear':
                 self.head = nn.Sequential(

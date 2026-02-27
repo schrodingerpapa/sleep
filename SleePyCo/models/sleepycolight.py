@@ -2,37 +2,36 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import json
-from .CABM import  CBAM1D
 
 
-class SleePyCoBackbone(nn.Module): # 模型主干网络
+class SleePyCoLightBackbone(nn.Module): # 模型主干网络
     
     def __init__(self, config):
-        super(SleePyCoBackbone, self).__init__()
+        super(SleePyCoLightBackbone, self).__init__()
 
         self.training_mode = config['training_params']['mode']
 
         # architecture
-        self.init_layer = self.make_layers(in_channels=1, out_channels=64, n_layers=2, maxpool_size=None, first=True)
-        self.layer1 = self.make_layers(in_channels=64, out_channels=128, n_layers=2, maxpool_size=5)
-        self.layer2 = self.make_layers(in_channels=128, out_channels=192, n_layers=3, maxpool_size=5)
-        self.layer3 = self.make_layers(in_channels=192, out_channels=256, n_layers=3, maxpool_size=5)
-        self.layer4 = self.make_layers(in_channels=256, out_channels=256, n_layers=3, maxpool_size=5)
+        self.init_layer = self.make_layers(in_channels=1, out_channels=32, n_layers=1, maxpool_size=None, first=True)
+        self.layer1 = self.make_layers(in_channels=32, out_channels=64, n_layers=2, maxpool_size=5)
+        self.layer2 = self.make_layers(in_channels=64, out_channels=96, n_layers=2, maxpool_size=5)
+        self.layer3 = self.make_layers(in_channels=96, out_channels=128, n_layers=3, maxpool_size=5)
+        self.layer4 = self.make_layers(in_channels=128, out_channels=128, n_layers=3, maxpool_size=5)
 
         if self.training_mode == 'freezefinetune' or self.training_mode == 'scratch': #训练模式，根据不同模式决定是否使用特征金字塔
             self.fp_dim = config['feature_pyramid']['dim'] # 确定特征金字塔的维度
             self.num_scales = config['feature_pyramid']['num_scales'] # 确定特征金字塔的尺度数量
-            self.conv_c5 = nn.Conv1d(256, self.fp_dim, 1, 1, 0)
+            self.conv_c5 = nn.Conv1d(128, self.fp_dim, 1, 1, 0)
             # 使用 1x1 卷积层 conv_c5, conv_c4, conv_c3 对不同尺度的特征图进行降维，使其具有相同的维度 fp_dim
             # in_channels=256（Conv5原始通道）
             # out_channels=128（目标通道d_f）
             # kernel_size=1（1×1卷积）
 
             if self.num_scales > 1:
-                self.conv_c4 = nn.Conv1d(256, self.fp_dim, 1, 1, 0)
+                self.conv_c4 = nn.Conv1d(128, self.fp_dim, 1, 1, 0)
             
             if self.num_scales > 2:
-                self.conv_c3 = nn.Conv1d(192, self.fp_dim, 1, 1, 0)
+                self.conv_c3 = nn.Conv1d(96, self.fp_dim, 1, 1, 0)
             
         if config['backbone']['init_weights']:
             self._initialize_weights()
@@ -67,11 +66,11 @@ class SleePyCoBackbone(nn.Module): # 模型主干网络
     def forward(self, x): # x: [batch_size, channel, length],前向传播
         out = []
         # 输入数据得到不同尺度的特征图
-        c1 = self.init_layer(x) # B,64,3000
-        c2 = self.layer1(c1) # B,128,600
-        c3 = self.layer2(c2) # B,192,120
-        c4 = self.layer3(c3) # B,256,24
-        c5 = self.layer4(c4) # B,256,5
+        c1 = self.init_layer(x) # B,32,3000
+        c2 = self.layer1(c1) # B,64,600
+        c3 = self.layer2(c2) # B,96,120
+        c4 = self.layer3(c3) # B,128,24
+        c5 = self.layer4(c4) # B,128,5
 
         if self.training_mode == 'pretrain'or self.training_mode == 'FreRA' or self.training_mode == 'mix_FreRA':
             out.append(c5) # 预训练只返回最后一层的特征图
@@ -179,7 +178,7 @@ if __name__ == "__main__":
     x = torch.randn(50, 1, 3000)  # EEG [batch, channel, length]
     json_path = r"/home/chenlungan/算法模型/SleePyCo/configs/SleePyCo-Transformer_SL-01_numScales-1_Sleep-EDF-2018_pretrain.json"
     config = json.load(open(json_path, 'r'))
-    model = SleePyCoBackbone(config)
+    model = SleePyCoLightBackbone(config)
     # 测试前向传播
     with torch.no_grad():
         output = model(x)
