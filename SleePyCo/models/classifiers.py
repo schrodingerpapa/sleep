@@ -205,6 +205,67 @@ class AttLSTM(AttRNN):
         return h0, c0
 
 
+class GRUAttn(AttRNN):
+    """
+    针对单通道睡眠 EEG 分期优化的 GRU + Attention 分类器
+    集成 ACD 方案：
+    (Additive): 非线性 tanh 注意力映射
+    (Context Fusion): 注意力特征与 GRU 最终隐藏状态拼接
+    (Normalization): 引入 LayerNorm 稳定生理信号梯度
+    """
+    def __init__(self, config):
+        super(GRUAttn, self).__init__(config)
+        # 覆盖父类的 rnn 为 GRU
+        self.rnn = nn.GRU(
+            input_size=self.input_dim,
+            hidden_size=self.hidden_dim,
+            num_layers=self.num_layers,
+            batch_first=True,
+            bidirectional=self.bidirectional,
+        )
+        
+        #  层标准化：处理 EEG 幅度差异，稳定训练
+        self.rnn_out_dim = self.hidden_dim * 2 if self.bidirectional else self.hidden_dim
+        self.layer_norm = nn.LayerNorm(self.rnn_out_dim)
+
+        #  注意力映射保持不变，但 forward 中会加入 tanh
+        
+        #  修改全连接层：输入维度 = 注意力特征(hidden_dim) + GRU最后状态(rnn_out_dim)
+        fusion_dim = self.hidden_dim + self.rnn_out_dim
+        self.fc = nn.Linear(fusion_dim, self.num_classes)
+
+    def forward(self, x):
+        # 1. 初始隐藏状态并经过 GRU
+        hidden = self.init_hidden(x)
+        rnn_output, hn = self.rnn(x, hidden) # rnn_output: (B, L, 2H)
+        
+        #  LayerNorm
+        rnn_output = self.layer_norm(rnn_output)
+
+        #  加性非线性注意力计算
+        a_states = torch.tanh(self.w_ha(rnn_output)) # (B, L, H)
+        # 计算权重 alpha: (B, 1, L)
+        alpha = torch.softmax(self.w_att(a_states), dim=1).transpose(1, 2)
+        
+        # 加权求和得到上下文向量: (B, H)
+        weighted_sum = torch.bmm(alpha, a_states).squeeze(1)
+
+        #  上下文融合 (Context Fusion)
+        # 提取 GRU 的最后状态（针对双向进行拼接）
+        if self.bidirectional:
+            # hn shape: (num_layers * 2, B, H) -> 取最后一层的正向和反向
+            last_hidden = torch.cat((hn[-2,:,:], hn[-1,:,:]), dim=1) # (B, 2H)
+        else:
+            last_hidden = hn[-1,:,:] # (B, H)
+            
+        # 拼接“局部显著特征”与“全局时序状态”
+        combined = torch.cat((weighted_sum, last_hidden), dim=1) # (B, H + 2H)
+
+        # 分类输出
+        output = self.fc(combined)
+        return output
+
+
 class PositionalEncoding(nn.Module):
 
     def __init__(self, config, in_features, out_features, dropout=0.1):
@@ -460,6 +521,42 @@ class MambaClassifier(nn.Module):
         logits = self.fc(out)
         return logits
 
+class FC_Classifier(nn.Module):
+    def __init__(self, config):
+        super(FC_Classifier, self).__init__()
+        self.cfg = config["classifier"]
+        self.num_classes = self.cfg["num_classes"]
+        self.input_dim = self.cfg["input_dim"]  # 输入特征维度
+        self.dropout_rate = self.cfg.get("dropout", 0.0)  # 可选dropout
+        
+        # 核心全连接层
+        self.fc = nn.Linear(self.input_dim, self.num_classes)
+        
+        # 可选dropout（防止过拟合）
+        if self.dropout_rate > 0:
+            self.dropout = nn.Dropout(p=self.dropout_rate)
+
+    def forward(self, x):
+        """
+        输入 x: [batch_size, input_dim] （二维张量）
+        若输入是三维 [batch_size, seq_len, input_dim]，自动展平/池化
+        """
+        # 处理三维输入（兼容时序特征）
+        if len(x.shape) == 3:
+            # 方式1：取最后一维（时序最后一步）
+            # x = x[:, -1, :]
+            # 方式2：均值池化（推荐，利用所有时序信息）
+            x = x.mean(dim=1)
+        
+        # dropout（可选）
+        if self.dropout_rate > 0:
+            x = self.dropout(x)
+        
+        # 全连接分类
+        logits = self.fc(x)
+        return logits
+
+
 
 def get_classifier(config):
     classifier_name = config["classifier"]["name"]
@@ -481,6 +578,10 @@ def get_classifier(config):
 
     elif classifier_name == "AttentionGRU":
         classifier = AttGRU(config)
+    
+    # --- 新增 GRUAttn 的入口 ---
+    elif classifier_name == "GRUAttn":
+        classifier = GRUAttn(config)
 
     elif classifier_name == "Transformer":
         classifier = Transformer(
@@ -495,7 +596,10 @@ def get_classifier(config):
         classifier = MambaClassifier(
             config, num_layers=1, pool=config["classifier"]["pool"]
         )
-    elif classifier_name == "CotarFormer":
+    elif classifier_name == "CotarFormer" or classifier_name == "CotarFormer6":
         classifier = CotarFormerClassifier(config)
+
+    elif classifier_name == "FC":
+        classifier = FC_Classifier(config)
 
     return classifier
