@@ -69,10 +69,10 @@ class OneFoldTrainer:
             model, device_ids=list(range(len(self.args.gpu.split(","))))
         )
         load_name = self.cfg["name"]
-        # if self.cfg["classifier"]["name"] != "Transformer":
-        #     load_name = self.cfg["name"].replace(
-        #         self.cfg["classifier"]["name"], "Transformer"
-        #     )
+        if self.cfg["classifier"]["name"] != "Transformer":
+            load_name = self.cfg["name"].replace(
+                self.cfg["classifier"]["name"], "Transformer"
+            )
 
         if self.tp_cfg["mode"] != "scratch":
             print("[INFO] Model loaded for finetune")

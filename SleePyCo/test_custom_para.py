@@ -238,7 +238,7 @@ class OneFoldTrainer:
         plt.savefig(save_fig_path, bbox_inches="tight")
         print("Predicted per frame:", predictions)
 
-    def run_ensemble(self, npz_path):
+    
         from collections import Counter
 
         # if file_path == "csv_path": # 读取csv文件
@@ -381,6 +381,197 @@ class OneFoldTrainer:
 
         return final_prediction
 
+    def run_ensemble(self, npz_path):
+        from collections import Counter
+        import time
+        import numpy as np
+
+        data = np.load(npz_path)
+        eeg_data = data["x"]
+        label_data = data["y"]
+
+        input_data = eeg_data.flatten().astype(float)
+
+        segment_length = 30000
+        frame_length = 3000
+
+        num_segments = len(input_data) // segment_length
+
+        if num_segments == 0:
+            raise ValueError(f"数据长度不足一个完整样本（{segment_length}点）")
+
+        all_predictions = []
+
+        total_time = 0.0
+        total_frames = 0
+
+        for fold in range(1, 11):
+
+            print(f"[INFO] 正在加载 Fold {fold} 的模型...")
+
+            self.model = self.build_model()
+
+            load_path = os.path.join(
+                "checkpoints",
+                self.cfg["name"],
+                f"ckpt_fold-{fold:02d}.pth",
+            )
+
+            self.model.load_state_dict(torch.load(load_path), strict=False)
+
+            self.model.to(self.device)
+            self.model.eval()
+
+            # -----------------------
+            # GPU warmup
+            # -----------------------
+            dummy = torch.randn(1, 1, 3000).to(self.device)
+
+            for _ in range(20):
+                _ = self.model(dummy)
+
+            torch.cuda.synchronize()
+
+            fold_preds = []
+            fold_total_time = 0.0
+
+            for i in range(num_segments):
+
+                segment = input_data[
+                    i * segment_length : (i + 1) * segment_length
+                ]
+
+                frames = [
+                    segment[j * frame_length : (j + 1) * frame_length]
+                    for j in range(10)
+                ]
+
+                input_frames = np.array(frames)[:, np.newaxis, :]
+                inputs = torch.tensor(input_frames, dtype=torch.float32).to(self.device)
+
+                # -----------------------
+                # accurate GPU timing
+                # -----------------------
+                torch.cuda.synchronize()
+                start_time = time.time()
+
+                with torch.no_grad():
+                    outputs = self.model(inputs)[0]
+                    predicted = torch.argmax(outputs, dim=1)
+
+                torch.cuda.synchronize()
+                end_time = time.time()
+
+                elapsed = end_time - start_time
+
+                fold_total_time += elapsed
+                total_time += elapsed
+
+                fold_preds.extend(predicted.cpu().numpy())
+
+                total_frames += len(predicted)
+
+            all_predictions.append(fold_preds)
+
+            print(f"[INFO] Fold {fold} 推理耗时: {fold_total_time:.4f}s")
+
+        all_predictions = np.array(all_predictions)
+
+        # -----------------------
+        # voting ensemble
+        # -----------------------
+
+        final_prediction = []
+
+        for t in range(all_predictions.shape[1]):
+
+            frame_votes = all_predictions[:, t]
+
+            most_common = Counter(frame_votes).most_common(1)[0][0]
+
+            final_prediction.append(most_common)
+
+        data = final_prediction
+
+        time_points = [
+            i / 120 for i in range(len(data))
+        ]
+
+        # -----------------------
+        # plot
+        # -----------------------
+
+        fig = plt.gcf()
+        fig.clf()
+
+        plt.figure(figsize=(10, 6))
+
+        ax_1 = plt.subplot(2, 1, 1)
+
+        ax_1.plot(time_points, label_data[: len(data)], "#008000")
+
+        plt.title("Hypnogram Scored by Human Expert", fontweight="medium")
+
+        plt.yticks([0, 1, 2, 3, 4], ["W", "N1", "N2", "N3", "REM"])
+
+        plt.xlabel("Time [h]")
+        plt.ylabel("Sleep Stage")
+
+        ax_2 = plt.subplot(2, 1, 2)
+
+        ax_2.plot(time_points, data, "#00008B")
+
+        plt.title("Hypnogram Scored by SleePyCo", fontweight="medium")
+
+        plt.yticks([0, 1, 2, 3, 4], ["W", "N1", "N2", "N3", "REM"])
+
+        plt.xlabel("Time [h]")
+        plt.ylabel("Sleep Stage")
+
+        plt.tight_layout()
+
+        filename = "SC_conference_predictions"
+
+        save_fig_path = (
+            r"/home/chenlungan/算法模型/SleePyCo/results/{filename}.png".format(
+                filename=filename
+            )
+        )
+
+        plt.savefig(save_fig_path, bbox_inches="tight")
+
+        print("最终预测结果（逐帧）：", final_prediction)
+
+        df = pd.DataFrame(
+            {
+                "Frame": range(1, len(final_prediction) + 1),
+                "Predicted": final_prediction,
+                "real label": label_data[: len(final_prediction)],
+            }
+        )
+
+        df.to_csv(
+            r"/home/chenlungan/算法模型/SleePyCo/results/SC_conference_predictions.csv",
+            index=False,
+        )
+
+        # -----------------------
+        # performance report
+        # -----------------------
+
+        print(f"[INFO] 总推理耗时: {total_time:.4f}s")
+
+        avg_latency = total_time / total_frames
+
+        print(f"[INFO] 单帧平均延迟: {avg_latency*1000:.3f} ms")
+
+        fps = 1 / avg_latency
+
+        print(f"[INFO] 推理速度: {fps:.2f} FPS")
+
+        print(f"[INFO] 总帧数: {total_frames}")
+
+        return final_prediction
 
 def main():
     warnings.filterwarnings("ignore", category=DeprecationWarning)
