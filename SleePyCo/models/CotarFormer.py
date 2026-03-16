@@ -34,11 +34,7 @@ class EncoderLayer(nn.Module):
             nn.Dropout(self.dropout)
         )
 
-    def forward(self, x):
-        B, N, D = x.shape
-        if D != self.d_model:
-            x = nn.Linear(D, self.d_model)(x)
-        
+    def forward(self, x):        
         x_att = self.attn(x)
         x = self.norm1(x + x_att)
         
@@ -49,9 +45,10 @@ class EncoderLayer(nn.Module):
     
     
 class CoTAR(nn.Module):
-    def __init__(self, d_model, d_core=64):
+    def __init__(self,d_model, d_core=64):
         super(CoTAR, self).__init__()
         self.d_model = d_model
+
         self.lin1 = nn.Linear(d_model, d_model)
         self.lin2 = nn.Linear(d_model, d_core)
         self.lin3 = nn.Linear(d_model + d_core, d_model)
@@ -59,8 +56,6 @@ class CoTAR(nn.Module):
 
     def forward(self, x):
         B, N, D = x.shape
-        if D != self.d_model:
-            x = nn.Linear(D, self.d_model)(x)
 
         # MLP
         core = F.gelu(self.lin1(x))
@@ -80,8 +75,8 @@ class CoTAR(nn.Module):
 if __name__ == "__main__":
     # 创建测试输入数据
     import json
-    x = torch.randn(50, 32, 3000)  # EEG [batch, channel, length]
-    json_path = r"/home/chenlungan/算法模型/SleePyCo/configs/MAE/SleePyCo-Transformer_SL-01_numScales-1_Sleep-EDF-2018_pretrainMAE.json"
+    x = torch.randn(50, 32, 128)  # EEG [batch, channel, length]
+    json_path = r"/home/chenlungan/算法模型/SleePyCo/configs/MAE/MAE-Transformer_SL-01_numScales-1_Sleep-EDF-2018_pretrainMAE.json"
     config = json.load(open(json_path, 'r'))
     model = CotarFormer(config)
     # 测试前向传播
