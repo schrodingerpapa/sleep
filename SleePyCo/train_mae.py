@@ -11,7 +11,7 @@ import torch.multiprocessing as mp
 from utils import *
 from loss import SupConLoss
 from loader import EEGDataLoader
-from models.main_model import MainModel
+from models.MAE.sleepMAE import SleepMAE
 from models.utils import Conv1d
 
 # train_crl用于预训练对比学习模型
@@ -33,7 +33,8 @@ class OneFoldTrainer:
         self.model = self.build_model()
         self.loader_dict = self.build_dataloader()
 
-        self.criterion = SupConLoss(temperature=self.tp_cfg["temperature"])
+        self.alpha = self.cfg["training_params"]["alpha"]
+        self.contastive_loss = SupConLoss(temperature=self.tp_cfg["temperature"])
         self.optimizer = optim.Adam(
             self.model.parameters(),
             lr=self.tp_cfg["lr"],
@@ -57,7 +58,7 @@ class OneFoldTrainer:
         self.fold_end_time = None  # 添加训练时间记录
 
     def build_model(self):
-        model = MainModel(self.cfg)
+        model = SleepMAE(self.cfg)
         print(
             "[INFO] Number of params of model: ",
             sum(p.numel() for p in model.parameters() if p.requires_grad),
@@ -99,13 +100,16 @@ class OneFoldTrainer:
             labels = labels.view(-1).to(self.device)  # B,
 
             inputs = inputs.to(self.device)  # B,1,3000 
-            outputs = self.model(inputs)[0]  # 2*B,proj_dim
+            rec_loss, z1, z2 = self.model(inputs) 
+            feature = torch.cat([z1.unsqueeze(1), z2.unsqueeze(1)], dim=1)
+            contrastive_loss = self.contastive_loss(feature, labels)
+            loss = rec_loss + contrastive_loss
 
-            f1, f2 = torch.split(outputs, [labels.size(0), labels.size(0)], dim=0)  # f1:B,proj_dim   f2:B,proj_dim
-            features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)  # B,2,proj_dim
-            loss += self.criterion(features, labels)
+            if loss.numel() > 1:
+                loss = loss.mean()
+            loss += loss  
 
-            
+            self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
 
@@ -140,10 +144,10 @@ class OneFoldTrainer:
             inputs = inputs.to(self.device)
             labels = labels.view(-1).to(self.device)
 
-            outputs = self.model(inputs)[0]
-
-            features = outputs.unsqueeze(1).repeat(1, 2, 1)
-            loss += self.criterion(features, labels)
+            inputs = inputs.to(self.device)  # B,1,3000 
+            loss, _, _ = self.model(inputs) 
+            if loss.numel() > 1:
+                loss = loss.mean()
 
             eval_loss += loss.item()
 
