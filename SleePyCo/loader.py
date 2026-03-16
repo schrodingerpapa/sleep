@@ -69,11 +69,9 @@ class EEGDataLoader(Dataset):
                 inputs = [input_a, input_b]
             elif self.training_mode == "pretrainMAE":
                 inputs = inputs.reshape(1, n_sample)
-                inputs = torch.from_numpy(inputs).float()
-                inputs = inputs.view(5, 600)
-                inputs = inputs.view(5, 50, 12)
+                
 
-            elif self.training_mode in ["scratch", "fullyfinetune", "freezefinetune","FreRA"]:
+            elif self.training_mode in ["scratch", "fullyfinetune", "freezefinetune","FreRA","fullfinetune"]:
                 inputs = inputs.reshape(1, n_sample)
                 inputs = torch.from_numpy(inputs).float()
             else:
