@@ -7,6 +7,7 @@ from .sleepcov2 import SleePyCoBackboneV2
 from .sleepcov3 import SleePyCoBackboneV3
 from .sleepycolight import SleePyCoLightBackbone
 from .sleepycolightV2 import SleePyCoUltraLightBackbone
+from .sleepycolightV3 import SleePyCoLightV3Backbone
 from .sleepycolightV2withoutECA import Light_ECABackbone
 
 from .xsleepnet import XSleepNetFeature
@@ -25,6 +26,7 @@ last_chn_dict = {
     'SleePyCoV3': 256,
     'SleePyCoLight': 128,
     'SleePyCoLightV2': 128,
+    'SleePyCoLightV3': 128,
     'XSleepNet': 256,
     'IITNet': 128,
     'UTime': 256,
@@ -51,8 +53,13 @@ class MainModel(nn.Module):
             self.feature = SleePyCoBackboneV3(self.cfg)
         elif self.bb_cfg['name'] == 'SleePyCoLight':
             self.feature = SleePyCoLightBackbone(self.cfg)
+
+        elif self.bb_cfg['name'] == 'SleePyCoLightV3':
+            self.feature = SleePyCoLightV3Backbone(self.cfg)
+            
         elif self.bb_cfg['name'] == 'SleePyCoLightV2':
             self.feature = SleePyCoUltraLightBackbone(self.cfg)
+
         elif self.bb_cfg['name'] == 'Light_ECA':
             self.feature = Light_ECABackbone(self.cfg)
         elif self.bb_cfg['name'] == 'CotarFormer':
