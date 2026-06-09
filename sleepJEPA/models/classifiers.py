@@ -1,9 +1,21 @@
 import math
 import torch
 import torch.nn as nn
-from mamba_ssm import Mamba
-from .tAPE_PositionalEncoding import eRPE_Transformer
-from .CotarFormer import CotarFormer
+
+try:
+    from mamba_ssm import Mamba
+except ImportError:
+    Mamba = None
+
+try:
+    from .tAPE_PositionalEncoding import eRPE_Transformer
+except ImportError:
+    eRPE_Transformer = None
+
+try:
+    from .CotarFormer import CotarFormer
+except ImportError:
+    CotarFormer = None
 
 feature_len_dict = {
     "SleePyCo": [
@@ -55,7 +67,6 @@ class PlainRNN(nn.Module):
         self.num_layers = self.cfg["num_rnn_layers"]
         self.bidirectional = self.cfg["bidirectional"]
 
-        # architecture
         self.rnn = nn.RNN(
             input_size=self.input_dim,
             hidden_size=self.hidden_dim,
@@ -91,7 +102,6 @@ class PlainRNN(nn.Module):
             output = rnn_output[:, -1, :]
 
         output = self.fc(output)
-
         return output
 
 
@@ -140,7 +150,6 @@ class PlainLSTM(PlainRNN):
 class AttRNN(PlainRNN):
     def __init__(self, config):
         super(AttRNN, self).__init__(config)
-        # architecture
         self.fc = nn.Linear(self.hidden_dim, self.num_classes)
         self.w_ha = nn.Linear(
             self.hidden_dim * 2 if self.bidirectional else self.hidden_dim,
@@ -158,7 +167,6 @@ class AttRNN(PlainRNN):
 
         output = weighted_sum.view(x.size(0), -1)
         output = self.fc(output)
-
         return output
 
 
@@ -205,17 +213,8 @@ class AttLSTM(AttRNN):
 
 
 class GRUAttn(AttRNN):
-    """
-    针对单通道睡眠 EEG 分期优化的 GRU + Attention 分类器
-    集成 ACD 方案：
-    (Additive): 非线性 tanh 注意力映射
-    (Context Fusion): 注意力特征与 GRU 最终隐藏状态拼接
-    (Normalization): 引入 LayerNorm 稳定生理信号梯度
-    """
-
     def __init__(self, config):
         super(GRUAttn, self).__init__(config)
-        # 覆盖父类的 rnn 为 GRU
         self.rnn = nn.GRU(
             input_size=self.input_dim,
             hidden_size=self.hidden_dim,
@@ -224,52 +223,32 @@ class GRUAttn(AttRNN):
             bidirectional=self.bidirectional,
         )
 
-        #  层标准化：处理 EEG 幅度差异，稳定训练
         self.rnn_out_dim = (
             self.hidden_dim * 2 if self.bidirectional else self.hidden_dim
         )
         self.layer_norm = nn.LayerNorm(self.rnn_out_dim)
-
-        #  注意力映射保持不变，但 forward 中会加入 tanh
-
-        #  修改全连接层：输入维度 = 注意力特征(hidden_dim) + GRU最后状态(rnn_out_dim)
         fusion_dim = self.hidden_dim + self.rnn_out_dim
         self.fc = nn.Linear(fusion_dim, self.num_classes)
 
     def forward(self, x):
-        # 1. 初始隐藏状态并经过 GRU
         hidden = self.init_hidden(x)
-        rnn_output, hn = self.rnn(x, hidden)  # rnn_output: (B, L, 2H)
-
-        #  LayerNorm
+        rnn_output, hn = self.rnn(x, hidden)
         rnn_output = self.layer_norm(rnn_output)
-
-        #  加性非线性注意力计算
-        a_states = torch.tanh(self.w_ha(rnn_output))  # (B, L, H)
-        # 计算权重 alpha: (B, 1, L)
+        a_states = torch.tanh(self.w_ha(rnn_output))
         alpha = torch.softmax(self.w_att(a_states), dim=1).transpose(1, 2)
 
-        # 加权求和得到上下文向量: (B, H)
         weighted_sum = torch.bmm(alpha, a_states).squeeze(1)
-
-        #  上下文融合 (Context Fusion)
-        # 提取 GRU 的最后状态（针对双向进行拼接）
         if self.bidirectional:
-            # hn shape: (num_layers * 2, B, H) -> 取最后一层的正向和反向
-            last_hidden = torch.cat((hn[-2, :, :], hn[-1, :, :]), dim=1)  # (B, 2H)
+            last_hidden = torch.cat((hn[-2, :, :], hn[-1, :, :]), dim=1)
         else:
-            last_hidden = hn[-1, :, :]  # (B, H)
+            last_hidden = hn[-1, :, :]
 
-        # 拼接“局部显著特征”与“全局时序状态”
-        combined = torch.cat((weighted_sum, last_hidden), dim=1)  # (B, H + 2H)
-
-        # 分类输出
+        combined = torch.cat((weighted_sum, last_hidden), dim=1)
         output = self.fc(combined)
         return output
 
 
 class PositionalEncoding(nn.Module):
-
     def __init__(self, config, in_features, out_features, dropout=0.1):
         super(PositionalEncoding, self).__init__()
         self.cfg = config["classifier"]["pos_enc"]
@@ -295,12 +274,10 @@ class PositionalEncoding(nn.Module):
         div_term = torch.exp(
             torch.arange(0, out_features, 2).float()
             * (-math.log(10000.0) / out_features)
-        )  # 对数指数变换，避免直接大数幂次，提升数值稳定性
+        )
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0).transpose(
-            0, 1
-        )  # unsqueeze(0) → (1, max_len, out_features)；transpose(0,1) → (max_len, 1, out_features)
+        pe = pe.unsqueeze(0).transpose(0, 1)
         self.register_buffer("pe", pe)
 
     def forward(self, x):
@@ -308,14 +285,14 @@ class PositionalEncoding(nn.Module):
 
         if self.num_scales > 1:
             hop = self.max_len // x.size(0)
-            pe = self.pe[hop // 2 :: hop, :]  # 均匀采样pos
+            pe = self.pe[hop // 2 :: hop, :]
         else:
             pe = self.pe
 
         if pe.shape[0] != x.size(0):
             pe = pe[: x.size(0), :]
 
-        x = x + pe  # pe自动广播到x的shape
+        x = x + pe
 
         if self.cfg["dropout"]:
             x = self.dropout(x)
@@ -326,7 +303,6 @@ class PositionalEncoding(nn.Module):
 class PositionalEmbedding(nn.Module):
     def __init__(self, d_model, max_len=5000):
         super(PositionalEmbedding, self).__init__()
-        # Compute the positional encodings once in log space.
         pe = torch.zeros(max_len, d_model).float()
         pe.require_grad = True
 
@@ -346,15 +322,11 @@ class PositionalEmbedding(nn.Module):
 
 
 class Transformer(nn.Module):
-
     def __init__(self, config, nheads, num_encoder_layers, pool="mean"):
-
         super(Transformer, self).__init__()
-
         self.cfg = config["classifier"]
         self.model_dim = self.cfg["model_dim"]
         self.feedforward_dim = self.cfg["feedforward_dim"]
-
         self.in_features = config["feature_pyramid"]["dim"]
         self.out_features = self.cfg["model_dim"]
 
@@ -367,7 +339,7 @@ class Transformer(nn.Module):
             nhead=nheads,
             dim_feedforward=self.feedforward_dim,
             dropout=0.1 if self.cfg["dropout"] else 0.0,
-        )  # 标准的输入格式为 [seq_len, B, in_features_CH]——>[时间步，Batch，通道特征]
+        )
         self.transformer = nn.TransformerEncoder(
             self.transformer_layer, num_layers=num_encoder_layers
         )
@@ -385,23 +357,21 @@ class Transformer(nn.Module):
 
     def forward(self, x):
         x = x.transpose(0, 1)
-        x = self.pos_encoding(x)  # 这里位置编码的输入为， [seq_len, B, in_features_CH]
+        x = self.pos_encoding(x)
         x = self.transformer(x)
-        x = x.transpose(0, 1)  # 经过transfomer编码， [B, seq_len, in_features_CH]
+        x = x.transpose(0, 1)
 
         if self.pool == "mean":
-            x = x.mean(dim=1)  # 输入 (B, L, C) → 输出 (B, C)
+            x = x.mean(dim=1)
         elif self.pool == "last":
-            x = x[:, -1]  # 输入 (B, L, C) → 输出 (B, C)
+            x = x[:, -1]
         elif self.pool == "attn":
-            a_states = torch.tanh(
-                self.w_ha(x)
-            )  # (B, L, C) → (B, L, C)（线性变换+激活）
+            a_states = torch.tanh(self.w_ha(x))
             alpha = torch.softmax(self.w_at(a_states), dim=1).view(
                 x.size(0), 1, x.size(1)
-            )  # (B, 1, L)
+            )
             x = torch.bmm(alpha, a_states).view(x.size(0), -1)
-        elif self.pool == None:
+        elif self.pool is None:
             x = x
         else:
             raise NotImplementedError
@@ -410,7 +380,6 @@ class Transformer(nn.Module):
             x = self.dropout(x)
 
         out = self.fc(x)
-
         return out
 
 
@@ -433,18 +402,16 @@ class CotarFormerClassifier(nn.Module):
         x = self.transformer(x)
 
         if self.pool == "mean":
-            x = x.mean(dim=1)  # 输入 (B, L, C) → 输出 (B, C)
+            x = x.mean(dim=1)
         elif self.pool == "last":
-            x = x[:, -1]  # 输入 (B, L, C) → 输出 (B, C)
+            x = x[:, -1]
         elif self.pool == "attn":
-            a_states = torch.tanh(
-                self.w_ha(x)
-            )  # (B, L, C) → (B, L, C)（线性变换+激活）
+            a_states = torch.tanh(self.w_ha(x))
             alpha = torch.softmax(self.w_at(a_states), dim=1).view(
                 x.size(0), 1, x.size(1)
-            )  # (B, 1, L)
+            )
             x = torch.bmm(alpha, a_states).view(x.size(0), -1)
-        elif self.pool == None:
+        elif self.pool is None:
             x = x
         else:
             raise NotImplementedError
@@ -457,12 +424,13 @@ class CotarFormerClassifier(nn.Module):
 
 
 class MambaClassifier(nn.Module):
-    """
-    基于 Mamba 模型的分类器
-    """
-
     def __init__(self, config, num_layers=3, pool="mean"):
         super(MambaClassifier, self).__init__()
+
+        if Mamba is None:
+            raise ImportError(
+                "mamba_ssm is required for MambaClassifier. Install it or use a different classifier."
+            )
 
         self.cfg = config["classifier"]
         self.model_dim = self.cfg["model_dim"]
@@ -470,58 +438,45 @@ class MambaClassifier(nn.Module):
         self.out_features = self.cfg["model_dim"]
         self.pool = pool
 
-        # 输入线性映射到模型维度
         self.proj = nn.Linear(self.in_features, self.model_dim)
-
-        # 定义 Mamba 模块（堆叠多层）
         self.mamba_layers = nn.ModuleList(
             [
                 Mamba(
                     d_model=self.model_dim,
-                    d_state=16,  # 状态维度，可调
-                    d_conv=4,  # 卷积核宽度
-                    expand=2,  # 通道扩展倍数
+                    d_state=16,
+                    d_conv=4,
+                    expand=2,
                 )
                 for _ in range(num_layers)
             ]
         )
 
-        # dropout（可选）
         if self.cfg["dropout"]:
             self.dropout = nn.Dropout(p=0.5)
 
-        # 如果使用注意力池化
         if pool == "attn":
             self.w_ha = nn.Linear(self.model_dim, self.model_dim, bias=True)
             self.w_at = nn.Linear(self.model_dim, 1, bias=False)
 
-        # 分类层
         self.fc = nn.Linear(self.model_dim, self.cfg["num_classes"])
 
     def forward(self, x):
-        """
-        输入 x: [batch, seq_len, in_features]
-        """
-        # 投影
         x = self.proj(x)
 
-        # 经过多层 Mamba 模块
         for layer in self.mamba_layers:
             x = layer(x)
 
-        # 池化
         if self.pool == "mean":
             out = x.mean(dim=1)
         elif self.pool == "max":
             out, _ = x.max(dim=1)
         elif self.pool == "attn":
-            attn_score = self.w_at(torch.tanh(self.w_ha(x)))  # [B, T, 1]
+            attn_score = self.w_at(torch.tanh(self.w_ha(x)))
             attn_weight = torch.softmax(attn_score, dim=1)
             out = torch.sum(attn_weight * x, dim=1)
         else:
-            raise ValueError(f"Unknown pooling type: {self.pool}")
+            raise NotImplementedError
 
-        # dropout + 分类
         if self.cfg["dropout"]:
             out = self.dropout(out)
 
@@ -534,79 +489,71 @@ class FC_Classifier(nn.Module):
         super(FC_Classifier, self).__init__()
         self.cfg = config["classifier"]
         self.num_classes = self.cfg["num_classes"]
-        self.input_dim = self.cfg["input_dim"]  # 输入特征维度
-        self.dropout_rate = self.cfg.get("dropout", 0.0)  # 可选dropout
+        self.input_dim = self.cfg.get("input_dim", config["model"].get("embed_dim"))
+        self.dropout_rate = self.cfg.get("dropout", 0.0)
 
-        # 核心全连接层
         self.fc = nn.Linear(self.input_dim, self.num_classes)
 
-        # 可选dropout（防止过拟合）
         if self.dropout_rate > 0:
             self.dropout = nn.Dropout(p=self.dropout_rate)
 
     def forward(self, x):
-        """
-        输入 x: [batch_size, input_dim] （二维张量）
-        若输入是三维 [batch_size, seq_len, input_dim]，自动展平/池化
-        """
-        # 处理三维输入（兼容时序特征）
         if len(x.shape) == 3:
-            # 方式1：取最后一维（时序最后一步）
-            # x = x[:, -1, :]
-            # 方式2：均值池化（推荐，利用所有时序信息）
             x = x.mean(dim=1)
 
-        # dropout（可选）
         if self.dropout_rate > 0:
             x = self.dropout(x)
 
-        # 全连接分类
         logits = self.fc(x)
         return logits
 
 
 def get_classifier(config):
-    classifier_name = config["classifier"]["name"]
+    classifier_name = config["classifier"].get("name", "FC")
 
     if classifier_name == "PlainRNN":
         classifier = PlainRNN(config)
-
     elif classifier_name == "AttentionRNN":
         classifier = AttRNN(config)
-
-    if classifier_name == "PlainLSTM":
+    elif classifier_name == "PlainLSTM":
         classifier = PlainLSTM(config)
-
     elif classifier_name == "AttentionLSTM":
         classifier = AttLSTM(config)
-
     elif classifier_name == "PlainGRU":
         classifier = PlainGRU(config)
-
     elif classifier_name == "AttentionGRU":
         classifier = AttGRU(config)
-
-    # --- 新增 GRUAttn 的入口 ---
     elif classifier_name == "GRUAttn":
         classifier = GRUAttn(config)
-
     elif classifier_name == "Transformer":
+        if eRPE_Transformer is None:
+            raise ImportError(
+                "eRPE_Transformer dependency is missing. Install the required module or use a different classifier."
+            )
         classifier = Transformer(
             config, nheads=8, num_encoder_layers=6, pool=config["classifier"]["pool"]
         )
     elif classifier_name == "eRPETransformer":
+        if eRPE_Transformer is None:
+            raise ImportError(
+                "eRPE_Transformer dependency is missing. Install the required module or use a different classifier."
+            )
         classifier = eRPE_Transformer(
             config, nheads=8, num_encoder_layers=6, pool=config["classifier"]["pool"]
         )
-
     elif classifier_name == "Mamba":
         classifier = MambaClassifier(
             config, num_layers=1, pool=config["classifier"]["pool"]
         )
     elif classifier_name == "CotarFormer" or classifier_name == "CotarFormer6":
+        if CotarFormer is None:
+            raise ImportError(
+                "CotarFormer dependency is missing. Copy CotarFormer.py into the local models package or use a different classifier."
+            )
         classifier = CotarFormerClassifier(config)
-
     elif classifier_name == "FC":
         classifier = FC_Classifier(config)
+    else:
+        raise ValueError(f"Unknown classifier name: {classifier_name}")
 
     return classifier
