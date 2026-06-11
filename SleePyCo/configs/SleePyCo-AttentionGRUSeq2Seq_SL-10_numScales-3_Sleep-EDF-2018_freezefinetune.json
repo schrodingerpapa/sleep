@@ -22,6 +22,7 @@
         "hidden_dim": 128,
         "num_rnn_layers": 1,
         "bidirectional": true,
+        "share_across_scales": true,
         "dropout": false,
         "num_classes": 5
     },

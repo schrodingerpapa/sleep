@@ -108,3 +108,17 @@ iostat -xz 1
 
 如果 GPU util 低、CPU 单核很高，多半是 `DataParallel` 主线程或数据处理瓶颈。
 如果磁盘 util 高，则优先把 `.npz` 数据放到本地 SSD，避免网络盘读取。
+
+## Seq2Seq 分类头
+
+`SleePyCo/train_seq2seq.py` 默认在多个 feature pyramid 尺度之间共享同一个
+seq2seq 分类头，配置项为：
+
+```json
+"classifier": {
+  "share_across_scales": true
+}
+```
+
+如果需要做消融实验，可以改成 `false`，此时每个尺度会各自创建一个分类头，
+分类头参数量也会按 `feature_pyramid.num_scales` 放大。

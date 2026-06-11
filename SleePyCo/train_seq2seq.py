@@ -70,7 +70,7 @@ class GRUSeq2SeqClassifier(nn.Module):
 
 
 class AttentionGRUSeq2SeqClassifier(nn.Module):
-    """Seq2Seq GRU head adapted from models.classifiers.AttGRU."""
+    """Seq2Seq GRU head with the same parameters as classifiers.AttGRU."""
 
     def __init__(self, config):
         super().__init__()
@@ -89,15 +89,13 @@ class AttentionGRUSeq2SeqClassifier(nn.Module):
         self.w_att = nn.Linear(attn_dim, 1, bias=False)
         dropout = cfg.get("dropout_rate", 0.5 if cfg.get("dropout", False) else 0.0)
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
-        self.fc = nn.Linear(attn_dim * 2, cfg["num_classes"])
+        self.fc = nn.Linear(attn_dim, cfg["num_classes"])
 
     def forward(self, x):
         rnn_output, _ = self.rnn(x)
         a_states = torch.tanh(self.w_ha(rnn_output))
-        alpha = torch.softmax(self.w_att(a_states), dim=1).transpose(1, 2)
-        context = torch.bmm(alpha, a_states)
-        context = context.expand(-1, a_states.size(1), -1)
-        x = torch.cat([a_states, context], dim=-1)
+        alpha = torch.softmax(self.w_att(a_states), dim=1)
+        x = a_states * (1.0 + alpha)
         x = self.dropout(x)
         return self.fc(x)
 
@@ -174,13 +172,24 @@ class Seq2SeqModel(nn.Module):
         self.cfg = config
         self.epoch_samples = config["dataset"].get("epoch_samples", 3000)
         self.feature = build_backbone(config)
-        print("[INFO] Seq2Seq classifier: {}".format(config["classifier"]["name"]))
-        self.classifiers = nn.ModuleList(
-            [
-                build_seq2seq_classifier(config)
-                for _ in range(config["feature_pyramid"]["num_scales"])
-            ]
+        self.share_classifier_across_scales = config["classifier"].get(
+            "share_across_scales", True
         )
+        print("[INFO] Seq2Seq classifier: {}".format(config["classifier"]["name"]))
+        print(
+            "[INFO] Share seq2seq classifier across scales: {}".format(
+                self.share_classifier_across_scales
+            )
+        )
+        if self.share_classifier_across_scales:
+            self.classifier = build_seq2seq_classifier(config)
+        else:
+            self.classifiers = nn.ModuleList(
+                [
+                    build_seq2seq_classifier(config)
+                    for _ in range(config["feature_pyramid"]["num_scales"])
+                ]
+            )
 
         print(
             "[INFO] Number of params of backbone: ",
@@ -188,8 +197,13 @@ class Seq2SeqModel(nn.Module):
         )
         print(
             "[INFO] Number of params of seq2seq classifiers: ",
-            sum(p.numel() for p in self.classifiers.parameters() if p.requires_grad),
+            self.count_classifier_params(),
         )
+
+    def count_classifier_params(self):
+        if self.share_classifier_across_scales:
+            return sum(p.numel() for p in self.classifier.parameters() if p.requires_grad)
+        return sum(p.numel() for p in self.classifiers.parameters() if p.requires_grad)
 
     def forward(self, x):
         batch_size, channels, n_samples = x.shape
@@ -210,9 +224,14 @@ class Seq2SeqModel(nn.Module):
 
         features = self.feature(epoch_inputs)
         outputs = []
-        for feature, classifier in zip(features, self.classifiers):
+        for scale_idx, feature in enumerate(features):
             pooled = F.adaptive_avg_pool1d(feature, 1).squeeze(-1)
             seq_features = pooled.view(batch_size, seq_len, -1)
+            classifier = (
+                self.classifier
+                if self.share_classifier_across_scales
+                else self.classifiers[scale_idx]
+            )
             outputs.append(classifier(seq_features))
 
         return outputs
