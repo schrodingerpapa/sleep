@@ -73,3 +73,38 @@ python train.py jepa finetune --config configs/your_config.json --fold 1 --gpu 0
 - 旧训练脚本继续保留，用于兼容已有记录、配置和 checkpoint。
 - 新增训练变体时，优先注册到 `train.py` 中，再判断是否需要单独脚本。
 - 新配置和新训练脚本中尽量避免硬编码绝对路径。
+
+## 服务器训练性能建议
+
+当前 SleePyCo/Seq2Seq 训练默认模型较小，直接使用 8 张 2080Ti 通过
+`DataParallel` 训练时，可能出现显存被占用但 GPU 利用率很低的情况。
+这通常是单进程调度、CPU 数据准备或 batch 太小导致的，不一定是 GPU
+计算能力不足。
+
+建议按下面顺序排查：
+
+1. 先用单卡或双卡跑通，并把 batch size 调大到显存占用较充分。
+
+```bash
+python train.py sleepyco seq2seq --config configs/SleePyCo-AttentionGRUSeq2Seq_SL-10_numScales-3_Sleep-EDF-2018_freezefinetune.json --fold 1 --gpu 0 --num-workers 8 --amp --benchmark
+```
+
+2. 单卡吞吐正常后，再尝试双卡或四卡。
+
+```bash
+python train.py sleepyco seq2seq --config configs/SleePyCo-AttentionGRUSeq2Seq_SL-10_numScales-3_Sleep-EDF-2018_freezefinetune.json --fold 1 --gpu 0,1 --num-workers 8 --amp --benchmark
+```
+
+3. 不建议一开始就用 `--gpu 0,1,2,3,4,5,6,7`。当前代码使用
+`DataParallel`，8 卡时主进程 scatter/gather 开销明显，小模型反而可能更慢。
+
+4. 观察瓶颈时优先看：
+
+```bash
+nvidia-smi dmon -s pucm
+top
+iostat -xz 1
+```
+
+如果 GPU util 低、CPU 单核很高，多半是 `DataParallel` 主线程或数据处理瓶颈。
+如果磁盘 util 高，则优先把 `.npz` 数据放到本地 SSD，避免网络盘读取。

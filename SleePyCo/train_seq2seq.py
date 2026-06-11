@@ -193,9 +193,14 @@ class OneFoldSeq2SeqTrainer:
         self.es_cfg = self.tp_cfg["early_stopping"]
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.gpu_ids = [gpu_id for gpu_id in self.args.gpu.split(",") if gpu_id != ""]
+        self.use_amp = bool(self.args.amp and self.device.type == "cuda")
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
         self.train_iter = 0
 
         print("[INFO] Config name: {}".format(config["name"]))
+        if self.use_amp:
+            print("[INFO] AMP mixed precision enabled")
         self.model = self.build_model()
         self.loader_dict = self.build_dataloader()
         self.criterion = nn.CrossEntropyLoss()
@@ -224,9 +229,9 @@ class OneFoldSeq2SeqTrainer:
             "[INFO] Number of params of model: ",
             sum(p.numel() for p in model.parameters() if p.requires_grad),
         )
-        if torch.cuda.is_available():
+        if torch.cuda.is_available() and len(self.gpu_ids) > 1:
             model = torch.nn.DataParallel(
-                model, device_ids=list(range(len(self.args.gpu.split(","))))
+                model, device_ids=list(range(len(self.gpu_ids)))
             )
 
         if self.tp_cfg["mode"] != "scratch":
@@ -295,21 +300,32 @@ class OneFoldSeq2SeqTrainer:
         num_workers = (
             self.args.num_workers
             if self.args.num_workers is not None
-            else 4 * len(self.args.gpu.split(","))
+            else min(16, max(4, 2 * len(self.gpu_ids)))
         )
+        pin_memory = self.device.type == "cuda"
 
         loaders = {}
         for split in ["train", "val", "test"]:
             dataset = Seq2SeqEEGDataLoader(self.cfg, self.fold, set=split)
+            loader_kwargs = {
+                "dataset": dataset,
+                "batch_size": self.tp_cfg["batch_size"],
+                "shuffle": (split == "train"),
+                "num_workers": num_workers,
+                "pin_memory": pin_memory,
+            }
+            if num_workers > 0:
+                loader_kwargs["persistent_workers"] = True
+                loader_kwargs["prefetch_factor"] = self.args.prefetch_factor
             loaders[split] = DataLoader(
-                dataset=dataset,
-                batch_size=self.tp_cfg["batch_size"],
-                shuffle=(split == "train"),
-                num_workers=num_workers,
-                pin_memory=True,
+                **loader_kwargs
             )
 
-        print("[INFO] Seq2Seq dataloaders prepared")
+        print(
+            "[INFO] Seq2Seq dataloaders prepared, num_workers={}, pin_memory={}".format(
+                num_workers, pin_memory
+            )
+        )
         return loaders
 
     def activate_train_mode(self):
@@ -332,16 +348,17 @@ class OneFoldSeq2SeqTrainer:
                     param.requires_grad = True
 
     def compute_loss_and_logits(self, inputs, labels):
-        outputs = self.model(inputs)
-        logits_sum = torch.zeros_like(outputs[0])
-        loss = 0
-        flat_labels = labels.reshape(-1)
+        with torch.cuda.amp.autocast(enabled=self.use_amp):
+            outputs = self.model(inputs)
+            logits_sum = torch.zeros_like(outputs[0])
+            loss = 0
+            flat_labels = labels.reshape(-1)
 
-        for logits in outputs:
-            loss = loss + self.criterion(
-                logits.reshape(-1, logits.size(-1)), flat_labels
-            )
-            logits_sum = logits_sum + logits
+            for logits in outputs:
+                loss = loss + self.criterion(
+                    logits.reshape(-1, logits.size(-1)), flat_labels
+                )
+                logits_sum = logits_sum + logits
 
         return loss, logits_sum
 
@@ -349,15 +366,20 @@ class OneFoldSeq2SeqTrainer:
         correct, total, train_loss = 0, 0, 0
 
         for i, (inputs, labels) in enumerate(self.loader_dict["train"]):
-            inputs = inputs.to(self.device)
-            labels = labels.to(self.device)
+            inputs = inputs.to(self.device, non_blocking=True)
+            labels = labels.to(self.device, non_blocking=True)
             total += labels.numel()
 
             loss, logits = self.compute_loss_and_logits(inputs, labels)
 
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
+            self.optimizer.zero_grad(set_to_none=True)
+            if self.use_amp:
+                self.scaler.scale(loss).backward()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                loss.backward()
+                self.optimizer.step()
 
             train_loss += loss.item()
             predicted = torch.argmax(logits, dim=-1)
@@ -391,8 +413,8 @@ class OneFoldSeq2SeqTrainer:
         y_pred = np.zeros((0, self.cfg["classifier"]["num_classes"]))
 
         for i, (inputs, labels) in enumerate(self.loader_dict[mode]):
-            inputs = inputs.to(self.device)
-            labels = labels.to(self.device)
+            inputs = inputs.to(self.device, non_blocking=True)
+            labels = labels.to(self.device, non_blocking=True)
             total += labels.numel()
 
             loss, logits = self.compute_loss_and_logits(inputs, labels)
@@ -488,12 +510,22 @@ def main():
     parser.add_argument("--config", type=str, required=True, help="config file path")
     parser.add_argument("--fold", type=int, default=None, help="run one fold only")
     parser.add_argument("--num-workers", type=int, default=None, help="DataLoader workers")
+    parser.add_argument("--prefetch-factor", type=int, default=4, help="DataLoader prefetch factor")
+    parser.add_argument("--amp", action="store_true", help="use CUDA AMP mixed precision")
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help="enable cudnn benchmark for faster fixed-shape training",
+    )
     args = parser.parse_args()
 
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
     set_random_seed(args.seed, use_cuda=True)
+    if args.benchmark and torch.cuda.is_available():
+        torch.backends.cudnn.deterministic = False
+        torch.backends.cudnn.benchmark = True
 
     with open(args.config) as config_file:
         config = json.load(config_file)
