@@ -17,6 +17,24 @@ import time
 import numpy as np
 
 
+def make_grad_scaler(enabled):
+    if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+        try:
+            return torch.amp.GradScaler("cuda", enabled=enabled)
+        except TypeError:
+            return torch.amp.GradScaler(enabled=enabled)
+    return torch.cuda.amp.GradScaler(enabled=enabled)
+
+
+def autocast_cuda(enabled):
+    if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+        try:
+            return torch.amp.autocast("cuda", enabled=enabled)
+        except TypeError:
+            return torch.amp.autocast(enabled=enabled)
+    return torch.cuda.amp.autocast(enabled=enabled)
+
+
 class OneFoldTrainer:
     def __init__(self, args, fold, config):
         self.args = args
@@ -29,7 +47,12 @@ class OneFoldTrainer:
         self.es_cfg = self.tp_cfg["early_stopping"]
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.gpu_ids = [gpu_id for gpu_id in self.args.gpu.split(",") if gpu_id != ""]
+        self.use_amp = bool(self.args.amp and self.device.type == "cuda")
+        self.scaler = make_grad_scaler(self.use_amp)
         print("[INFO] Config name: {}".format(config["name"]))
+        if self.use_amp:
+            print("[INFO] AMP mixed precision enabled")
 
         self.train_iter = 0
         self.model = self.build_model()
@@ -65,9 +88,10 @@ class OneFoldTrainer:
             "[INFO] Number of params of model: ",
             sum(p.numel() for p in model.parameters() if p.requires_grad),
         )
-        model = torch.nn.DataParallel(
-            model, device_ids=list(range(len(self.args.gpu.split(","))))
-        )
+        if torch.cuda.is_available() and len(self.gpu_ids) > 1:
+            model = torch.nn.DataParallel(
+                model, device_ids=list(range(len(self.gpu_ids)))
+            )
         load_name = self.cfg["name"]
         if self.cfg["classifier"]["name"] != "Transformer":
             load_name = self.cfg["name"].replace(
@@ -86,7 +110,9 @@ class OneFoldTrainer:
             load_path = os.path.join(
                 "checkpoints", load_name, "ckpt_fold-{0:02d}.pth".format(self.fold)
             )
-            model.load_state_dict(torch.load(load_path), strict=False)
+            state_dict = torch.load(load_path, map_location=self.device)
+            state_dict = self.normalize_state_dict_for_model(model, state_dict)
+            model.load_state_dict(state_dict, strict=False)
         model.to(self.device)
         print(
             "[INFO] Model prepared, Device used: {} GPU:{}".format(
@@ -96,85 +122,126 @@ class OneFoldTrainer:
 
         return model
 
+    @staticmethod
+    def normalize_state_dict_for_model(model, state_dict):
+        model_is_parallel = hasattr(model, "module")
+        state_is_parallel = any(key.startswith("module.") for key in state_dict)
+
+        if model_is_parallel or not state_is_parallel:
+            return state_dict
+
+        return {
+            key.replace("module.", "", 1): value
+            for key, value in state_dict.items()
+        }
+
+    def unwrap_model(self):
+        return self.model.module if hasattr(self.model, "module") else self.model
+
     def build_dataloader(self):
+        num_workers = (
+            self.args.num_workers
+            if self.args.num_workers is not None
+            else min(16, max(4, 2 * len(self.gpu_ids)))
+        )
+        pin_memory = self.device.type == "cuda"
+        loader_kwargs = {
+            "batch_size": self.tp_cfg["batch_size"],
+            "num_workers": num_workers,
+            "pin_memory": pin_memory,
+        }
+        if num_workers > 0:
+            loader_kwargs["persistent_workers"] = True
+            loader_kwargs["prefetch_factor"] = self.args.prefetch_factor
+
         train_dataset = EEGDataLoader(self.cfg, self.fold, set="train")
         train_loader = DataLoader(
             dataset=train_dataset,
-            batch_size=self.tp_cfg["batch_size"],
             shuffle=True,
-            num_workers=4 * len(self.args.gpu.split(",")),
-            pin_memory=True,
+            **loader_kwargs,
         )
         val_dataset = EEGDataLoader(self.cfg, self.fold, set="val")
         val_loader = DataLoader(
             dataset=val_dataset,
-            batch_size=self.tp_cfg["batch_size"],
             shuffle=False,
-            num_workers=4 * len(self.args.gpu.split(",")),
-            pin_memory=True,
+            **loader_kwargs,
         )
         test_dataset = EEGDataLoader(self.cfg, self.fold, set="test")
         test_loader = DataLoader(
             dataset=test_dataset,
-            batch_size=self.tp_cfg["batch_size"],
             shuffle=False,
-            num_workers=4 * len(self.args.gpu.split(",")),
-            pin_memory=True,
+            **loader_kwargs,
         )
-        print("[INFO] Dataloader prepared")
+        print(
+            "[INFO] Dataloader prepared, num_workers={}, pin_memory={}".format(
+                num_workers, pin_memory
+            )
+        )
 
         return {"train": train_loader, "val": val_loader, "test": test_loader}
 
     def activate_train_mode(self):
         self.model.train()
+        model = self.unwrap_model()
         if self.tp_cfg["mode"] == "freezefinetune":
             print("[INFO] Freeze backone")
-            self.model.module.feature.train(False)
-            for p in self.model.module.feature.parameters():
+            model.feature.train(False)
+            for p in model.feature.parameters():
                 p.requires_grad = False
 
             print("[INFO] Unfreeze conv_c5")
-            self.model.module.feature.conv_c5.train(True)
-            for p in self.model.module.feature.conv_c5.parameters():
+            model.feature.conv_c5.train(True)
+            for p in model.feature.conv_c5.parameters():
                 p.requires_grad = True
 
             if self.fp_cfg["num_scales"] > 1:
                 print("[INFO] Unfreeze conv_c4")
-                self.model.module.feature.conv_c4.train(True)
-                for p in self.model.module.feature.conv_c4.parameters():
+                model.feature.conv_c4.train(True)
+                for p in model.feature.conv_c4.parameters():
                     p.requires_grad = True
 
             if self.fp_cfg["num_scales"] > 2:
                 print("[INFO] Unfreeze conv_c3")
-                self.model.module.feature.conv_c3.train(True)
-                for p in self.model.module.feature.conv_c3.parameters():
+                model.feature.conv_c3.train(True)
+                for p in model.feature.conv_c3.parameters():
                     p.requires_grad = True
         elif self.tp_cfg["mode"] == "fullfinetune":
             print("[INFO] Unfreeze all layers")
             # 确保特征层处于训练模式且所有参数可训练
-            self.model.module.feature.train(True)
-            for p in self.model.module.feature.parameters():
+            model.feature.train(True)
+            for p in model.feature.parameters():
                 p.requires_grad = True
 
-    def train_one_epoch(self, epoch):
-        correct, total, train_loss = 0, 0, 0
-
-        for i, (inputs, labels) in enumerate(self.loader_dict["train"]):
-            loss = 0
-            total += labels.size(0)
-            inputs = inputs.to(self.device)
-            labels = labels.view(-1).to(self.device)
-
+    def compute_loss_and_logits(self, inputs, labels):
+        with autocast_cuda(self.use_amp):
             outputs = self.model(inputs)
             outputs_sum = torch.zeros_like(outputs[0])
+            loss = 0
 
             for j in range(len(outputs)):
                 loss += self.criterion(outputs[j], labels)
                 outputs_sum += outputs[j]
 
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
+        return loss, outputs_sum
+
+    def train_one_epoch(self, epoch):
+        correct, total, train_loss = 0, 0, 0
+
+        for i, (inputs, labels) in enumerate(self.loader_dict["train"]):
+            total += labels.size(0)
+            inputs = inputs.to(self.device, non_blocking=True)
+            labels = labels.view(-1).to(self.device, non_blocking=True)
+
+            loss, outputs_sum = self.compute_loss_and_logits(inputs, labels)
+
+            self.optimizer.zero_grad(set_to_none=True)
+            if self.use_amp:
+                self.scaler.scale(loss).backward()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                loss.backward()
+                self.optimizer.step()
 
             train_loss += loss.item()
             predicted = torch.argmax(outputs_sum, 1)
@@ -209,17 +276,11 @@ class OneFoldTrainer:
         y_pred = np.zeros((0, self.cfg["classifier"]["num_classes"]))
 
         for i, (inputs, labels) in enumerate(self.loader_dict[mode]):
-            loss = 0
             total += labels.size(0)
-            inputs = inputs.to(self.device)
-            labels = labels.view(-1).to(self.device)
+            inputs = inputs.to(self.device, non_blocking=True)
+            labels = labels.view(-1).to(self.device, non_blocking=True)
 
-            outputs = self.model(inputs)
-            outputs_sum = torch.zeros_like(outputs[0])
-
-            for j in range(len(outputs)):
-                loss += self.criterion(outputs[j], labels)
-                outputs_sum += outputs[j]
+            loss, outputs_sum = self.compute_loss_and_logits(inputs, labels)
 
             eval_loss += loss.item()
             predicted = torch.argmax(outputs_sum, 1)
@@ -269,7 +330,7 @@ class OneFoldTrainer:
         )
 
         self.model.load_state_dict(
-            torch.load(os.path.join(self.ckpt_path, self.ckpt_name))
+            torch.load(os.path.join(self.ckpt_path, self.ckpt_name), map_location=self.device)
         )
         y_true, y_pred = self.evaluate(mode="test")
         print("")
@@ -320,6 +381,14 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="random seed")
     parser.add_argument("--gpu", type=str, default="0,1,2,3,4,5,6,7", help="gpu id")
     parser.add_argument("--config", type=str, help="config file path")
+    parser.add_argument("--num-workers", type=int, default=None, help="DataLoader workers")
+    parser.add_argument("--prefetch-factor", type=int, default=4, help="DataLoader prefetch factor")
+    parser.add_argument("--amp", action="store_true", help="use CUDA AMP mixed precision")
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help="enable cudnn benchmark for faster fixed-shape training",
+    )
     args = parser.parse_args()
 
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -327,6 +396,9 @@ def main():
 
     # For reproducibility
     set_random_seed(args.seed, use_cuda=True)
+    if args.benchmark and torch.cuda.is_available():
+        torch.backends.cudnn.deterministic = False
+        torch.backends.cudnn.benchmark = True
 
     with open(args.config) as config_file:
         config = json.load(config_file)
