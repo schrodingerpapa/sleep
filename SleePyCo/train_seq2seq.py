@@ -69,6 +69,39 @@ class GRUSeq2SeqClassifier(nn.Module):
         return self.fc(x)
 
 
+class AttentionGRUSeq2SeqClassifier(nn.Module):
+    """Seq2Seq GRU head adapted from models.classifiers.AttGRU."""
+
+    def __init__(self, config):
+        super().__init__()
+        cfg = config["classifier"]
+        self.bidirectional = cfg.get("bidirectional", True)
+        self.rnn = nn.GRU(
+            input_size=cfg["input_dim"],
+            hidden_size=cfg["hidden_dim"],
+            num_layers=cfg["num_rnn_layers"],
+            batch_first=True,
+            bidirectional=self.bidirectional,
+        )
+        rnn_out_dim = cfg["hidden_dim"] * (2 if self.bidirectional else 1)
+        attn_dim = cfg.get("attention_dim", cfg["hidden_dim"])
+        self.w_ha = nn.Linear(rnn_out_dim, attn_dim, bias=True)
+        self.w_att = nn.Linear(attn_dim, 1, bias=False)
+        dropout = cfg.get("dropout_rate", 0.5 if cfg.get("dropout", False) else 0.0)
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+        self.fc = nn.Linear(attn_dim * 2, cfg["num_classes"])
+
+    def forward(self, x):
+        rnn_output, _ = self.rnn(x)
+        a_states = torch.tanh(self.w_ha(rnn_output))
+        alpha = torch.softmax(self.w_att(a_states), dim=1).transpose(1, 2)
+        context = torch.bmm(alpha, a_states)
+        context = context.expand(-1, a_states.size(1), -1)
+        x = torch.cat([a_states, context], dim=-1)
+        x = self.dropout(x)
+        return self.fc(x)
+
+
 class TransformerSeq2SeqClassifier(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -95,8 +128,10 @@ class TransformerSeq2SeqClassifier(nn.Module):
 
 def build_seq2seq_classifier(config):
     name = config["classifier"]["name"]
-    if name in {"GRUSeq2Seq", "AttentionGRUSeq2Seq", "PlainGRUSeq2Seq"}:
+    if name in {"GRUSeq2Seq", "PlainGRUSeq2Seq"}:
         return GRUSeq2SeqClassifier(config)
+    if name == "AttentionGRUSeq2Seq":
+        return AttentionGRUSeq2SeqClassifier(config)
     if name == "TransformerSeq2Seq":
         return TransformerSeq2SeqClassifier(config)
     raise NotImplementedError("seq2seq classifier not supported: {}".format(name))
@@ -139,6 +174,7 @@ class Seq2SeqModel(nn.Module):
         self.cfg = config
         self.epoch_samples = config["dataset"].get("epoch_samples", 3000)
         self.feature = build_backbone(config)
+        print("[INFO] Seq2Seq classifier: {}".format(config["classifier"]["name"]))
         self.classifiers = nn.ModuleList(
             [
                 build_seq2seq_classifier(config)
