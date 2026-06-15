@@ -32,6 +32,10 @@ from models.xsleepnet import XSleepNetFeature
 class Seq2SeqEEGDataLoader(EEGDataLoader):
     """Return all labels in a context window instead of labels[target_idx]."""
 
+    def __init__(self, config, fold, set="train", return_metadata=False):
+        self.return_metadata = return_metadata
+        super().__init__(config, fold, set=set)
+
     def __getitem__(self, idx):
         file_idx, start_idx, seq_len = self.epochs[idx]
         n_sample = 30 * self.sr * seq_len
@@ -42,6 +46,13 @@ class Seq2SeqEEGDataLoader(EEGDataLoader):
 
         labels = self.labels[file_idx][start_idx : start_idx + seq_len]
         labels = torch.from_numpy(labels).long()
+
+        if self.return_metadata:
+            metadata = {
+                "file_idx": torch.full((seq_len,), file_idx, dtype=torch.long),
+                "epoch_idx": torch.arange(start_idx, start_idx + seq_len).long(),
+            }
+            return inputs, labels, metadata
 
         return inputs, labels
 
@@ -246,6 +257,7 @@ class OneFoldSeq2SeqTrainer:
         self.fp_cfg = config["feature_pyramid"]
         self.tp_cfg = config["training_params"]
         self.es_cfg = self.tp_cfg["early_stopping"]
+        self.eval_strategy = self.tp_cfg.get("eval_strategy", "mean_logits")
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.gpu_ids = [gpu_id for gpu_id in self.args.gpu.split(",") if gpu_id != ""]
@@ -361,7 +373,12 @@ class OneFoldSeq2SeqTrainer:
 
         loaders = {}
         for split in ["train", "val", "test"]:
-            dataset = Seq2SeqEEGDataLoader(self.cfg, self.fold, set=split)
+            dataset = Seq2SeqEEGDataLoader(
+                self.cfg,
+                self.fold,
+                set=split,
+                return_metadata=(split != "train"),
+            )
             loader_kwargs = {
                 "dataset": dataset,
                 "batch_size": self.tp_cfg["batch_size"],
@@ -466,8 +483,16 @@ class OneFoldSeq2SeqTrainer:
         correct, total, eval_loss = 0, 0, 0
         y_true = np.zeros(0)
         y_pred = np.zeros((0, self.cfg["classifier"]["num_classes"]))
+        aggregate_epochs = self.eval_strategy == "mean_logits"
+        logit_sums, logit_counts, label_map = {}, {}, {}
 
-        for i, (inputs, labels) in enumerate(self.loader_dict[mode]):
+        for i, batch in enumerate(self.loader_dict[mode]):
+            if len(batch) == 3:
+                inputs, labels, metadata = batch
+            else:
+                inputs, labels = batch
+                metadata = None
+
             inputs = inputs.to(self.device, non_blocking=True)
             labels = labels.to(self.device, non_blocking=True)
             total += labels.numel()
@@ -478,8 +503,15 @@ class OneFoldSeq2SeqTrainer:
             predicted = torch.argmax(logits, dim=-1)
             correct += predicted.eq(labels).sum().item()
 
-            y_true = np.concatenate([y_true, labels.reshape(-1).cpu().numpy()])
-            y_pred = np.concatenate([y_pred, logits.reshape(-1, logits.size(-1)).cpu().numpy()])
+            if aggregate_epochs and metadata is not None:
+                self.update_epoch_aggregation(
+                    logit_sums, logit_counts, label_map, logits, labels, metadata
+                )
+            else:
+                y_true = np.concatenate([y_true, labels.reshape(-1).cpu().numpy()])
+                y_pred = np.concatenate(
+                    [y_pred, logits.reshape(-1, logits.size(-1)).cpu().numpy()]
+                )
 
             progress_bar(
                 i,
@@ -493,6 +525,22 @@ class OneFoldSeq2SeqTrainer:
             if len(self.loader_dict[mode]) > 0
             else 0
         )
+
+        if aggregate_epochs and logit_sums:
+            y_true, y_pred = self.finalize_epoch_aggregation(
+                logit_sums, logit_counts, label_map
+            )
+            correct = (np.argmax(y_pred, axis=1) == y_true).sum()
+            total = len(y_true)
+            avg_eval_loss = F.cross_entropy(
+                torch.from_numpy(y_pred).float(), torch.from_numpy(y_true).long()
+            ).item()
+            print(
+                "\n[INFO] Eval aggregation: mean_logits, unique epochs: {}".format(
+                    total
+                )
+            )
+
         avg_eval_acc = 100.0 * correct / total if total > 0 else 0.0
 
         if mode == "val":
@@ -500,6 +548,39 @@ class OneFoldSeq2SeqTrainer:
         if mode == "test":
             return y_true, y_pred
         raise NotImplementedError
+
+    @staticmethod
+    def update_epoch_aggregation(
+        logit_sums, logit_counts, label_map, logits, labels, metadata
+    ):
+        logits_np = logits.detach().float().cpu().numpy()
+        labels_np = labels.detach().cpu().numpy()
+        file_idx_np = metadata["file_idx"].cpu().numpy()
+        epoch_idx_np = metadata["epoch_idx"].cpu().numpy()
+
+        flat_logits = logits_np.reshape(-1, logits_np.shape[-1])
+        flat_labels = labels_np.reshape(-1)
+        flat_file_idx = file_idx_np.reshape(-1)
+        flat_epoch_idx = epoch_idx_np.reshape(-1)
+
+        for file_idx, epoch_idx, logit, label in zip(
+            flat_file_idx, flat_epoch_idx, flat_logits, flat_labels
+        ):
+            key = (int(file_idx), int(epoch_idx))
+            if key not in logit_sums:
+                logit_sums[key] = logit.copy()
+                logit_counts[key] = 1
+                label_map[key] = int(label)
+            else:
+                logit_sums[key] += logit
+                logit_counts[key] += 1
+
+    @staticmethod
+    def finalize_epoch_aggregation(logit_sums, logit_counts, label_map):
+        keys = sorted(logit_sums.keys())
+        y_pred = np.stack([logit_sums[key] / logit_counts[key] for key in keys])
+        y_true = np.array([label_map[key] for key in keys], dtype=np.int64)
+        return y_true, y_pred
 
     def run(self):
         fold_start_time = time.time()

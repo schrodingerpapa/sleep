@@ -15,15 +15,6 @@ from train_seq2seq import Seq2SeqEEGDataLoader, Seq2SeqModel
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-def make_grad_scaler(enabled):
-    if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
-        try:
-            return torch.amp.GradScaler("cuda", enabled=enabled)
-        except TypeError:
-            return torch.amp.GradScaler(enabled=enabled)
-    return torch.cuda.amp.GradScaler(enabled=enabled)
-
-
 def autocast_cuda(enabled):
     if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
         try:
@@ -47,13 +38,6 @@ def normalize_state_dict_for_model(model, state_dict):
         }
 
     return state_dict
-
-
-def strip_module_prefix(state_dict):
-    if not any(key.startswith("module.") for key in state_dict):
-        return state_dict
-    return {key.replace("module.", "", 1): value for key, value in state_dict.items()}
-
 
 def parse_folds(folds_arg, num_splits):
     if folds_arg is None:
@@ -115,10 +99,7 @@ def resolve_checkpoint(config, fold, ckpt_dir):
 
 def load_checkpoint(model, ckpt_path, device):
     state_dict = torch.load(ckpt_path, map_location=device)
-    if hasattr(model, "module"):
-        state_dict = normalize_state_dict_for_model(model, state_dict)
-    else:
-        state_dict = strip_module_prefix(state_dict)
+    state_dict = normalize_state_dict_for_model(model, state_dict)
     model.load_state_dict(state_dict, strict=False)
 
 

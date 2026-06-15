@@ -122,3 +122,31 @@ seq2seq 分类头，配置项为：
 
 如果需要做消融实验，可以改成 `false`，此时每个尺度会各自创建一个分类头，
 分类头参数量也会按 `feature_pyramid.num_scales` 放大。
+
+Seq2Seq 验证和测试默认会把滑动窗口中重复出现的同一个 epoch 进行合并：
+
+```json
+"training_params": {
+  "eval_strategy": "mean_logits"
+}
+```
+
+`mean_logits` 会按 `(record, epoch_idx)` 聚合同一个 epoch 的多次预测，再用平均
+logits 计算指标，避免滑动窗口评估时重复计数。需要复现旧逻辑时可改为
+`window_flatten`。
+
+评估已经训练好的 10 个 fold 时，使用独立脚本，不会重新训练：
+
+```bash
+cd SleePyCo
+python evaluate_all_folds_seq2seq.py \
+  --config configs/SleePyCo-AttentionGRUSeq2Seq_SL-10_numScales-3_Sleep-EDF-2018_freezefinetune.json \
+  --folds 1-10 \
+  --gpu 0,1,2,3 \
+  --num-workers 16 \
+  --amp \
+  --benchmark
+```
+
+该脚本会先输出每个 fold 的独立测试结果，最后输出所有 fold 拼接后的 pooled
+result。默认同样使用 `mean_logits` 合并滑动窗口重复预测。
