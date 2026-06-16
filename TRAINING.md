@@ -150,3 +150,6 @@ python evaluate_all_folds_seq2seq.py \
 
 该脚本会先输出每个 fold 的独立测试结果，最后输出所有 fold 拼接后的 pooled
 result。默认同样使用 `mean_logits` 合并滑动窗口重复预测。
+
+
+## 模型参数保存和加载
