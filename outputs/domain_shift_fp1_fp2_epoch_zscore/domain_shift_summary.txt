@@ -1,0 +1,28 @@
+Domain shift visualization summary
+==================================
+
+Source: DODH (/document/chenlungan/datasets/DODH/npz/Fp1-Fp2)
+Target: AnphySleep (/document/chenlungan/datasets/AnphySleep/npz/Fp1-Fp2)
+Feature mode: summary
+Sample mode: balanced
+Per-epoch z-score: True
+Standardized features: True
+PCA used: False
+t-SNE perplexity: 30.000000
+
+DODH available epochs: 24662
+DODH sampled epochs: 3000
+DODH sampled stage counts: {'0': 600, '1': 600, '2': 600, '3': 600, '4': 600}
+AnphySleep available epochs: 26118
+AnphySleep sampled epochs: 3000
+AnphySleep sampled stage counts: {'0': 600, '1': 600, '2': 600, '3': 600, '4': 600}
+
+Overall MMD2: 0.035973382834099565
+Overall permutation p-value: 0.004975
+
+Stage-wise MMD2:
+  0 W: 0.06209945044085918, p=0.004975
+  1 N1: 0.07404681517376488, p=0.004975
+  2 N2: 0.035862796253464335, p=0.004975
+  3 N3: 0.027413236374832728, p=0.004975
+  4 REM: 0.049563858180046605, p=0.004975

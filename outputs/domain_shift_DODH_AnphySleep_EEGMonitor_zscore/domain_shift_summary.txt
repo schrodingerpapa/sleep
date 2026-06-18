@@ -1,0 +1,30 @@
+Multi-domain FP1-FP2 domain shift summary
+===========================================
+
+Per-epoch z-score: True
+Feature mode: summary
+Sample mode: balanced
+Standardized features: True
+PCA used: False
+t-SNE perplexity: 30.000000
+
+DODH available epochs: 24662
+DODH sampled epochs: 3000
+DODH label policy: from_npz
+DODH sampled stage counts: {'0': 600, '1': 600, '2': 600, '3': 600, '4': 600}
+AnphySleep available epochs: 26118
+AnphySleep sampled epochs: 3000
+AnphySleep label policy: from_npz
+AnphySleep sampled stage counts: {'0': 600, '1': 600, '2': 600, '3': 600, '4': 600}
+EEG-Monitor available epochs: 17098
+EEG-Monitor sampled epochs: 3000
+EEG-Monitor label policy: forced_unknown
+EEG-Monitor sampled stage counts: {'-999': 3000}
+
+Pairwise overall MMD2:
+  AnphySleep__vs__EEG-Monitor: 0.014983388116080576, p=0.004975
+  DODH__vs__AnphySleep: 0.04050038217884344, p=0.004975
+  DODH__vs__EEG-Monitor: 0.05117313286952441, p=0.004975
+
+Note: datasets with Unknown or only Not-scored labels are included in overall MMD,
+but true stage-wise MMD requires sleep-stage labels or high-confidence pseudo-labels.
