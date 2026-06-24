@@ -1,0 +1,38 @@
+Multi-domain mixed FP1-FP2 and Fpz-Cz domain shift summary
+==========================================================
+
+Analysis label: mixed FP1-FP2 and Fpz-Cz
+Per-epoch z-score: True
+Feature mode: summary
+Sample mode: balanced
+Standardized features: True
+PCA used: False
+t-SNE perplexity: 30.000000
+
+DODH available epochs: 24662
+DODH sampled epochs: 3000
+DODH label policy: from_npz
+DODH sampled stage counts: {'0': 600, '1': 600, '2': 600, '3': 600, '4': 600}
+AnphySleep available epochs: 26118
+AnphySleep sampled epochs: 3000
+AnphySleep label policy: from_npz
+AnphySleep sampled stage counts: {'0': 600, '1': 600, '2': 600, '3': 600, '4': 600}
+EEG-Monitor available epochs: 17098
+EEG-Monitor sampled epochs: 3000
+EEG-Monitor label policy: forced_unknown
+EEG-Monitor sampled stage counts: {'-999': 3000}
+Sleep-EDF-2018 available epochs: 199352
+Sleep-EDF-2018 sampled epochs: 3000
+Sleep-EDF-2018 label policy: from_npz
+Sleep-EDF-2018 sampled stage counts: {'0': 600, '1': 600, '2': 600, '3': 600, '4': 600}
+
+Pairwise overall MMD2:
+  AnphySleep__vs__EEG-Monitor: 0.013839239366148393, p=0.004975
+  AnphySleep__vs__Sleep-EDF-2018: 0.036544690088752496, p=0.004975
+  DODH__vs__AnphySleep: 0.03319409755475755, p=0.004975
+  DODH__vs__EEG-Monitor: 0.04616938823653216, p=0.004975
+  DODH__vs__Sleep-EDF-2018: 0.047417210145147104, p=0.004975
+  EEG-Monitor__vs__Sleep-EDF-2018: 0.05540409328715912, p=0.004975
+
+Note: datasets with Unknown or only Not-scored labels are included in overall MMD,
+but true stage-wise MMD requires sleep-stage labels or high-confidence pseudo-labels.
